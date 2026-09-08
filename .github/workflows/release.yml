@@ -1,0 +1,62 @@
+name: Build and release
+
+# Push a tag like v1.3 and this builds the Windows installer and attaches it
+# to the release, so the in-app updater has something to find.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-server.txt pyinstaller
+
+      - name: Run the tests that need no display
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          python tests/make_fixture.py
+          python tests/test_pipeline.py
+          python tests/test_camera.py
+          python tests/test_service.py
+          python tests/test_updater.py
+
+      - name: Build the app
+        run: |
+          python tools/make_icon.py
+          python -m PyInstaller packaging/scoreshift.spec --noconfirm --clean
+
+      - name: Build the installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}","$env:ProgramFiles" -Filter ISCC.exe -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          & $iscc packaging\installer.iss
+
+      - name: Checksums
+        run: |
+          $setup = Get-ChildItem dist\ScoreShift-Setup-*.exe | Select-Object -First 1
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($setup.Name)" | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ScoreShift-Setup-*.exe
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

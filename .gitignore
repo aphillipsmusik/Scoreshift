@@ -1,0 +1,27 @@
+# Build output
+build/
+dist/
+*.spec.bak
+.venv/
+.venv-build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Test artefacts
+tests/out/
+tests/fixtures/view_*
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local build logs
+build-log.txt
+build-err.txt
+pipup*.txt
