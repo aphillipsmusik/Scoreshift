@@ -152,7 +152,7 @@ class Settings:
     omr_timeout_sec: int = 900
     # Updates
     auto_update_check: bool = True
-    update_repo: str = "aphillipsmusik/scoreshift"
+    update_repo: str = "aphillipsmusik/Scoreshift"
     last_update_check: float = 0.0
     skipped_version: str = ""
 

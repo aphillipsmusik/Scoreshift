@@ -21,7 +21,7 @@ from typing import Callable
 from . import __version__
 from .config import IS_WINDOWS
 
-DEFAULT_REPO = "aphillipsmusik/scoreshift"
+DEFAULT_REPO = "aphillipsmusik/Scoreshift"
 API = "https://api.github.com/repos/{repo}/releases/latest"
 USER_AGENT = f"ScoreShift/{__version__} (+https://github.com/{DEFAULT_REPO})"
 INSTALLER_PATTERN = re.compile(r"ScoreShift-Setup-.*\.exe$", re.IGNORECASE)

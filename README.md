@@ -27,7 +27,7 @@ printable PDF and a MIDI file.
 ## Installing
 
 Download the latest **ScoreShift-Setup-x.y.exe** from
-[Releases](https://github.com/aphillipsmusik/scoreshift/releases/latest) and run
+[Releases](https://github.com/aphillipsmusik/Scoreshift/releases/latest) and run
 it. Python is inside the installer; there is nothing to set up first. Leave
 *"Install the note-reading engine"* ticked on the components page and it will
 fetch Audiveris and Java for you (about 300 MB, a few minutes, one Windows
