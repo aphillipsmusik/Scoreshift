@@ -130,6 +130,9 @@ scoreshift/
     score.py           key detection and transposition (music21)
     export.py          PDF / MIDI / MusicXML / scan-PDF writing
   ui/                  Qt window, crop editor, camera view, score preview
+    theme.py           the dark palette and the app stylesheet
+    icons.py           line icons drawn at runtime, no image files
+    widgets.py         the shared buttons, cards and the slide-over panel
   service/             the JSON API
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script

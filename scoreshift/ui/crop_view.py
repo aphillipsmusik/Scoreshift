@@ -5,13 +5,14 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QImage, QPainterPath, QPen, QPixmap,
                            QPolygonF)
+from . import theme
 from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem,
                                QGraphicsPathItem, QGraphicsPixmapItem,
                                QGraphicsScene, QGraphicsView)
 
 HANDLE_R = 11.0
-ACCENT = QColor(64, 158, 255)
-SHADE = QColor(10, 12, 16, 130)
+ACCENT = QColor(theme.ACCENT)
+SHADE = QColor(10, 12, 16, 150)
 
 
 def ndarray_to_qpixmap(img: np.ndarray) -> QPixmap:
@@ -68,7 +69,7 @@ class CropView(QGraphicsView):
         self.setScene(self._scene)
         self.setRenderHints(self.renderHints())
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.setBackgroundBrush(QBrush(QColor(28, 30, 34)))
+        self.setBackgroundBrush(QBrush(QColor(theme.CANVAS)))
         self.setMinimumSize(320, 320)
 
         self._pixmap_item: QGraphicsPixmapItem | None = None

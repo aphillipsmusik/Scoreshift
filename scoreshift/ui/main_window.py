@@ -1,4 +1,5 @@
-"""ScoreShift main window."""
+"""ScoreShift main window - pages on the left, the music in the middle,
+and everything else in a panel that slides in when it's wanted."""
 from __future__ import annotations
 
 import os
@@ -12,14 +13,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget,
-                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                               QInputDialog, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMainWindow, QMessageBox,
-                               QPlainTextEdit, QProgressBar, QPushButton,
-                               QScrollArea, QSpinBox, QSplitter, QStackedWidget,
-                               QStatusBar, QTabWidget, QToolBar, QVBoxLayout,
+                               QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMainWindow, QMenu,
+                               QMessageBox, QPlainTextEdit, QProgressBar,
+                               QPushButton, QScrollArea, QSpinBox,
+                               QSizePolicy, QStackedWidget, QVBoxLayout,
                                QWidget)
 
 from ..config import IS_WINDOWS, Settings, work_dir
@@ -29,12 +29,17 @@ from ..pipeline import export as exporter
 from ..pipeline import omr, pagedetect
 from ..pipeline import score as scoring
 from ..pipeline import scanner as scanning
+from . import icons, theme
 from .crop_view import CropView, ndarray_to_qpixmap
 from .score_preview import ScorePreview
 from .settings_dialog import SettingsDialog
+from .widgets import (Card, Disclosure, SectionHeading, Segmented, SlideOver,
+                      StatusDot, button, divider, icon_button, label)
 from .workers import Job
 
 MAX_LOAD_DIM = 4200
+RAIL_WIDTH = 176
+THUMB = QSize(112, 146)
 
 
 @dataclass
@@ -58,35 +63,46 @@ class MainWindow(QMainWindow):
         self.pages: list[PageItem] = []
         self.job: ScoreJob | None = None
         self._job: Job | None = None
+        self._engine_ready = False
 
-        self.setWindowTitle("ScoreShift - scan, read and transpose sheet music")
-        self.resize(1440, 940)
-        self._build_ui()
-        QTimer.singleShot(400, self._startup_engine_check)
+        self.setWindowTitle("ScoreShift")
+        self.resize(1360, 900)
+        self.setMinimumSize(1020, 680)
+        self.setAcceptDrops(True)
+        self._build()
+        self._refresh_guidance()
+        QTimer.singleShot(300, self._startup_engine_check)
         QTimer.singleShot(2500, self._startup_update_check)
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # Construction
-    # ------------------------------------------------------------------
-    def _build_ui(self) -> None:
+    # ==================================================================
+    def _build(self) -> None:
         self._build_actions()
-        self._build_toolbar()
-        self._build_menu()
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self._build_page_list())
-        splitter.addWidget(self._build_center())
-        splitter.addWidget(self._build_controls())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([250, 740, 430])
-        self.setCentralWidget(splitter)
+        root = QWidget()
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        outer.addWidget(self._build_top_bar())
+
+        body = QWidget()
+        row = QHBoxLayout(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self._build_rail())
+        row.addWidget(self._build_canvas(), 1)
+        row.addWidget(self._build_panel())
+        outer.addWidget(body, 1)
+
+        outer.addWidget(self._build_status())
+        self.setCentralWidget(root)
 
         self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("Log")
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(4000)
-        self.log_view.setStyleSheet("font-family:Consolas,Menlo,monospace; font-size:11px;")
         dock = QDockWidget("Activity log", self)
         dock.setWidget(self.log_view)
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
@@ -94,350 +110,487 @@ class MainWindow(QMainWindow):
         dock.hide()
         self.log_dock = dock
 
-        bar = QStatusBar()
-        self.status_label = QLabel("Ready. Add photos or scan a page to begin.")
-        self.progress = QProgressBar()
-        self.progress.setMaximumWidth(220)
-        self.progress.setRange(0, 1)
-        self.progress.setValue(1)
-        self.progress.hide()
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self._cancel_job)
-        self.cancel_btn.hide()
-        bar.addWidget(self.status_label, 1)
-        bar.addPermanentWidget(self.progress)
-        bar.addPermanentWidget(self.cancel_btn)
-        self.setStatusBar(bar)
-
+    # -- actions / shortcuts -------------------------------------------
     def _build_actions(self) -> None:
-        self.act_add = QAction("Add images...", self)
-        self.act_add.setShortcut(QKeySequence.Open)
-        self.act_add.triggered.connect(self.add_images)
+        def act(text, slot, shortcut=None):
+            a = QAction(text, self)
+            if shortcut:
+                a.setShortcut(shortcut)
+            a.triggered.connect(slot)
+            self.addAction(a)
+            return a
 
-        self.act_camera = QAction("Camera...", self)
-        self.act_camera.setShortcut("Ctrl+Shift+C")
-        self.act_camera.triggered.connect(self.capture_from_camera)
+        self.act_add = act("Add images", self.add_images, QKeySequence.Open)
+        self.act_camera = act("Camera", self.capture_from_camera, "Ctrl+Shift+C")
+        self.act_scan = act("Scan", self.scan_pages, "Ctrl+Shift+S")
+        self.act_transcribe = act("Transcribe", self.transcribe, "Ctrl+R")
+        self.act_export = act("Save", self.export, QKeySequence.Save)
+        self.act_panel = act("Toggle panel", self.toggle_panel, "Ctrl+B")
+        self.act_open_xml = act("Open MusicXML or MIDI", self.open_score_file)
+        self.act_settings = act("Settings", self.open_settings, "Ctrl+,")
+        self.act_update = act("Check for updates",
+                              lambda: self.check_updates(quiet=False))
 
-        self.act_scan = QAction("Scan...", self)
-        self.act_scan.triggered.connect(self.scan_pages)
+    # -- top bar --------------------------------------------------------
+    def _build_top_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("TopBar")
+        bar.setFixedHeight(58)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(16, 0, 12, 0)
+        row.setSpacing(6)
 
-        self.act_open_xml = QAction("Open MusicXML / MIDI...", self)
-        self.act_open_xml.triggered.connect(self.open_score_file)
+        mark = QLabel()
+        mark.setPixmap(icons.pixmap("score", 22, theme.ACCENT))
+        row.addWidget(mark)
+        title = label("ScoreShift", "Title")
+        title.setContentsMargins(4, 0, 14, 0)
+        row.addWidget(title)
 
-        self.act_transcribe = QAction("Transcribe", self)
-        self.act_transcribe.setShortcut("Ctrl+R")
-        self.act_transcribe.triggered.connect(self.transcribe)
+        for text, icon_name, slot, tip in (
+            ("Add", "add", self.add_images, "Add photos or image files  (Ctrl+O)"),
+            ("Camera", "camera", self.capture_from_camera,
+             "Capture pages with a webcam  (Ctrl+Shift+C)"),
+            ("Scan", "scanner", self.scan_pages,
+             "Scan from your printer  (Ctrl+Shift+S)"),
+        ):
+            row.addWidget(button(text, icon_name, "ghost", tip))
 
-        self.act_export = QAction("Export...", self)
-        self.act_export.setShortcut(QKeySequence.Save)
-        self.act_export.triggered.connect(self.export)
+        row.addStretch(1)
 
-        self.act_settings = QAction("Settings...", self)
-        self.act_settings.triggered.connect(self.open_settings)
+        self.top_hint = label("", "Hint")
+        self.top_hint.setWordWrap(False)
+        self.top_hint.setContentsMargins(0, 0, 10, 0)
+        self.top_hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(self.top_hint)
 
-        self.act_engine = QAction("Check OMR engine", self)
-        self.act_engine.triggered.connect(lambda: self._engine_check(verbose=True))
+        self.primary = button("Transcribe", "transcribe", "primary")
+        self.primary.clicked.connect(self._do_primary)
+        row.addWidget(self.primary)
 
-        self.act_log = QAction("Show activity log", self)
-        self.act_log.setCheckable(True)
-        self.act_log.toggled.connect(lambda on: self.log_dock.setVisible(on))
+        self.btn_panel = icon_button("chevron-right", "Hide the side panel  (Ctrl+B)")
+        self.btn_panel.clicked.connect(self.toggle_panel)
+        row.addWidget(self.btn_panel)
 
-        self.act_update = QAction("Check for updates...", self)
-        self.act_update.triggered.connect(lambda: self.check_updates(quiet=False))
+        more = icon_button("settings", "More")
+        more.clicked.connect(self._show_menu)
+        self.btn_more = more
+        row.addWidget(more)
+        return bar
 
-        self.act_about = QAction("About ScoreShift", self)
-        self.act_about.triggered.connect(self.about)
+    def _show_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction(self.act_open_xml)
+        menu.addSeparator()
+        menu.addAction(self.act_settings)
+        engine_action = menu.addAction("Check the note reader")
+        engine_action.triggered.connect(lambda: self._engine_check(verbose=True))
+        log_action = menu.addAction("Activity log")
+        log_action.setCheckable(True)
+        log_action.setChecked(self.log_dock.isVisible())
+        log_action.toggled.connect(self.log_dock.setVisible)
+        menu.addSeparator()
+        menu.addAction(self.act_update)
+        about = menu.addAction("About ScoreShift")
+        about.triggered.connect(self.about)
+        menu.exec(self.btn_more.mapToGlobal(self.btn_more.rect().bottomLeft()))
 
-    def _build_toolbar(self) -> None:
-        tb = QToolBar("Main")
-        tb.setIconSize(QSize(20, 20))
-        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        tb.setMovable(False)
-        for act in (self.act_add, self.act_camera, self.act_scan):
-            tb.addAction(act)
-        tb.addSeparator()
-        tb.addAction(self.act_transcribe)
-        tb.addAction(self.act_export)
-        tb.addSeparator()
-        tb.addAction(self.act_settings)
-        self.addToolBar(tb)
+    # -- page rail ------------------------------------------------------
+    def _build_rail(self) -> QWidget:
+        rail = QWidget()
+        rail.setObjectName("PageRail")
+        rail.setFixedWidth(RAIL_WIDTH)
+        col = QVBoxLayout(rail)
+        col.setContentsMargins(12, 14, 12, 12)
+        col.setSpacing(10)
 
-    def _build_menu(self) -> None:
-        m = self.menuBar()
-        f = m.addMenu("&File")
-        f.addAction(self.act_add)
-        f.addAction(self.act_camera)
-        f.addAction(self.act_scan)
-        f.addAction(self.act_open_xml)
-        f.addSeparator()
-        f.addAction(self.act_transcribe)
-        f.addAction(self.act_export)
-        f.addSeparator()
-        quit_act = QAction("Exit", self)
-        quit_act.triggered.connect(self.close)
-        f.addAction(quit_act)
-
-        t = m.addMenu("&Tools")
-        t.addAction(self.act_settings)
-        t.addAction(self.act_engine)
-        t.addAction(self.act_log)
-
-        h = m.addMenu("&Help")
-        h.addAction(self.act_update)
-        h.addAction(self.act_about)
-
-    # -- left panel ------------------------------------------------------
-    def _build_page_list(self) -> QWidget:
-        box = QWidget()
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(8, 8, 4, 8)
-        title = QLabel("Pages")
-        title.setStyleSheet("font-weight:600; font-size:13px;")
-        lay.addWidget(title)
+        self.rail_heading = SectionHeading("Pages")
+        col.addWidget(self.rail_heading)
 
         self.page_list = QListWidget()
-        self.page_list.setIconSize(QSize(108, 140))
-        self.page_list.setSpacing(4)
-        self.page_list.currentRowChanged.connect(self._on_page_selected)
-        lay.addWidget(self.page_list, 1)
+        self.page_list.setIconSize(THUMB)
+        self.page_list.setSpacing(0)
+        self.page_list.setUniformItemSizes(False)
+        self.page_list.currentRowChanged.connect(lambda _: self._refresh_page_view())
+        col.addWidget(self.page_list, 1)
 
-        row = QHBoxLayout()
-        for text, slot, tip in (
-            ("Add", self.add_images, "Add photos or image files"),
-            ("Camera", self.capture_from_camera, "Capture pages with a webcam"),
-            ("Scan", self.scan_pages, "Scan from your printer"),
-            ("Remove", self.remove_page, "Remove the selected page"),
-        ):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            row.addWidget(b)
-        lay.addLayout(row)
-
-        row2 = QHBoxLayout()
-        up = QPushButton("Move up")
-        up.clicked.connect(lambda: self.move_page(-1))
-        down = QPushButton("Move down")
-        down.clicked.connect(lambda: self.move_page(1))
-        row2.addWidget(up)
-        row2.addWidget(down)
-        lay.addLayout(row2)
-        return box
-
-    # -- centre ----------------------------------------------------------
-    def _build_center(self) -> QWidget:
-        self.tabs = QTabWidget()
-
-        page_tab = QWidget()
-        pl = QVBoxLayout(page_tab)
-        pl.setContentsMargins(6, 6, 6, 6)
+        self.rail_empty = label("No pages yet.\nAdd, capture or scan one.", "Faint")
+        self.rail_empty.setAlignment(Qt.AlignCenter)
+        col.addWidget(self.rail_empty)
 
         tools = QHBoxLayout()
-        self.btn_detect = QPushButton("Detect page edges")
-        self.btn_detect.clicked.connect(self.detect_current)
-        self.btn_full = QPushButton("Use whole image")
-        self.btn_full.clicked.connect(self.reset_crop)
-        self.btn_rotate = QPushButton("Rotate 90°")
-        self.btn_rotate.clicked.connect(self.rotate_current)
-        self.btn_detect_all = QPushButton("Detect on all pages")
-        self.btn_detect_all.clicked.connect(self.detect_all)
-        for b in (self.btn_detect, self.btn_full, self.btn_rotate, self.btn_detect_all):
+        tools.setSpacing(2)
+        self.btn_up = icon_button("up", "Move this page earlier", 30)
+        self.btn_up.clicked.connect(lambda: self.move_page(-1))
+        self.btn_down = icon_button("down", "Move this page later", 30)
+        self.btn_down.clicked.connect(lambda: self.move_page(1))
+        self.btn_remove = icon_button("trash", "Remove this page", 30)
+        self.btn_remove.clicked.connect(self.remove_page)
+        for b in (self.btn_up, self.btn_down, self.btn_remove):
             tools.addWidget(b)
         tools.addStretch(1)
-        self.chk_show_clean = QCheckBox("Show cleaned result")
+        col.addLayout(tools)
+        return rail
+
+    # -- canvas ---------------------------------------------------------
+    def _build_canvas(self) -> QWidget:
+        canvas = QWidget()
+        canvas.setObjectName("Canvas")
+        col = QVBoxLayout(canvas)
+        col.setContentsMargins(16, 12, 16, 12)
+        col.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.view_switch = Segmented([("Page", "page"), ("Score", "score")])
+        self.view_switch.changed.connect(self._switch_view)
+        head.addWidget(self.view_switch)
+        head.addStretch(1)
+
+        self.page_tools = QWidget()
+        page_tools = QHBoxLayout(self.page_tools)
+        page_tools.setContentsMargins(0, 0, 0, 0)
+        page_tools.setSpacing(4)
+        self.btn_detect = button("Find edges", "crop", "quiet",
+                                 "Detect the page outline again")
+        self.btn_detect.clicked.connect(self.detect_current)
+        self.btn_full = button("Whole image", "page", "quiet",
+                               "Use the entire image, no cropping")
+        self.btn_full.clicked.connect(self.reset_crop)
+        self.btn_rotate = icon_button("rotate", "Rotate 90 degrees", 32)
+        self.btn_rotate.clicked.connect(self.rotate_current)
+        self.chk_show_clean = QCheckBox("Cleaned")
+        self.chk_show_clean.setToolTip("Show the page as the note reader sees it")
         self.chk_show_clean.toggled.connect(self._refresh_page_view)
-        tools.addWidget(self.chk_show_clean)
-        pl.addLayout(tools)
+        for w in (self.btn_detect, self.btn_full, self.btn_rotate,
+                  self.chk_show_clean):
+            page_tools.addWidget(w)
+        head.addWidget(self.page_tools)
 
-        self.crop_view = CropView()
-        self.crop_view.quad_changed.connect(self._on_quad_changed)
-        pl.addWidget(self.crop_view, 1)
-
-        self.page_hint = QLabel(
-            "Drag the blue corners to match the page. "
-            "Ctrl + mouse wheel zooms."
-        )
-        self.page_hint.setStyleSheet("color:#6b7280;")
-        pl.addWidget(self.page_hint)
-        self.tabs.addTab(page_tab, "Page")
-
-        score_tab = QWidget()
-        sl = QVBoxLayout(score_tab)
-        sl.setContentsMargins(6, 6, 6, 6)
-        zoom = QHBoxLayout()
-        zin = QPushButton("Zoom in")
+        self.score_tools = QWidget()
+        score_tools = QHBoxLayout(self.score_tools)
+        score_tools.setContentsMargins(0, 0, 0, 0)
+        score_tools.setSpacing(4)
+        zin = icon_button("zoom-in", "Zoom in", 32)
         zin.clicked.connect(lambda: self.preview.zoom(1.2))
-        zout = QPushButton("Zoom out")
+        zout = icon_button("zoom-out", "Zoom out", 32)
         zout.clicked.connect(lambda: self.preview.zoom(1 / 1.2))
-        zoom.addWidget(zin)
-        zoom.addWidget(zout)
-        zoom.addStretch(1)
-        self.preview_label = QLabel("")
-        self.preview_label.setStyleSheet("color:#6b7280;")
-        zoom.addWidget(self.preview_label)
-        sl.addLayout(zoom)
-        self.preview = ScorePreview()
-        sl.addWidget(self.preview, 1)
-        self.tabs.addTab(score_tab, "Score")
-        return self.tabs
-
-    # -- right panel -----------------------------------------------------
-    def _build_controls(self) -> QWidget:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        inner = QWidget()
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(12)
-
-        # Clean-up
-        clean = QGroupBox("1. Clean up the scan")
-        cl = QVBoxLayout(clean)
-        self.chk_crop = QCheckBox("Auto-crop to the page")
-        self.chk_crop.setChecked(self.settings.auto_crop)
-        self.chk_deskew = QCheckBox("Straighten crooked staves")
-        self.chk_deskew.setChecked(self.settings.auto_deskew)
-        self.chk_enhance = QCheckBox("Even out lighting and boost contrast")
-        self.chk_enhance.setChecked(self.settings.enhance)
-        self.chk_binarize = QCheckBox("Hard black and white (faint pencil scans)")
-        for c in (self.chk_crop, self.chk_deskew, self.chk_enhance, self.chk_binarize):
-            cl.addWidget(c)
-            c.toggled.connect(self._invalidate_processed)
-        lay.addWidget(clean)
-
-        # Transcribe
-        trans = QGroupBox("2. Read the notes")
-        tl = QVBoxLayout(trans)
-        self.engine_label = QLabel("Checking the OMR engine...")
-        self.engine_label.setWordWrap(True)
-        self.engine_label.setStyleSheet("color:#6b7280;")
-        tl.addWidget(self.engine_label)
-        self.btn_transcribe = QPushButton("Transcribe pages")
-        self.btn_transcribe.clicked.connect(self.transcribe)
-        tl.addWidget(self.btn_transcribe)
-        self.score_summary = QLabel("No score loaded yet.")
-        self.score_summary.setWordWrap(True)
-        tl.addWidget(self.score_summary)
-        lay.addWidget(trans)
-
-        # Transpose
-        tr = QGroupBox("3. Change the key")
-        trl = QVBoxLayout(tr)
-        form = QFormLayout()
-        self.cmb_mode = QComboBox()
-        self.cmb_mode.addItems(["To a key", "By half steps", "For an instrument"])
-        self.cmb_mode.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
-        form.addRow("Method:", self.cmb_mode)
-        self.cmb_source_key = QComboBox()
-        self.cmb_source_key.setEditable(False)
-        self._fill_keys(self.cmb_source_key, add_auto=True)
-        form.addRow("Original key:", self.cmb_source_key)
-        trl.addLayout(form)
+        self.preview_label = label("", "Faint")
+        score_tools.addWidget(self.preview_label)
+        score_tools.addWidget(zout)
+        score_tools.addWidget(zin)
+        head.addWidget(self.score_tools)
+        self.score_tools.hide()
+        col.addLayout(head)
 
         self.stack = QStackedWidget()
+        self.crop_view = CropView()
+        self.crop_view.quad_changed.connect(self._on_quad_changed)
+        self.preview = ScorePreview()
+        self.empty_state = self._build_empty_state()
+        self.stack.addWidget(self.crop_view)
+        self.stack.addWidget(self.preview)
+        self.stack.addWidget(self.empty_state)
+        self.stack.setCurrentWidget(self.empty_state)
+        col.addWidget(self.stack, 1)
 
-        w_key = QWidget()
-        f1 = QFormLayout(w_key)
-        f1.setContentsMargins(0, 0, 0, 0)
+        self.page_hint = label("", "Faint")
+        col.addWidget(self.page_hint)
+        return canvas
+
+    def _build_empty_state(self) -> QWidget:
+        holder = QWidget()
+        holder.setObjectName("DropZone")
+        holder.setStyleSheet(f"""
+            #DropZone {{ background: {theme.CANVAS};
+                         border: 1.5px dashed {theme.BORDER_STRONG};
+                         border-radius: {theme.RADIUS}px; }}
+        """)
+        col = QVBoxLayout(holder)
+        col.setAlignment(Qt.AlignCenter)
+        col.setSpacing(14)
+
+        art = QLabel()
+        art.setPixmap(icons.pixmap("score", 56, theme.BORDER_STRONG))
+        art.setAlignment(Qt.AlignCenter)
+        col.addWidget(art)
+
+        headline = label("Drop a page of music here", "Title")
+        headline.setAlignment(Qt.AlignCenter)
+        col.addWidget(headline)
+
+        sub = label("or bring one in another way", "Faint")
+        sub.setAlignment(Qt.AlignCenter)
+        col.addWidget(sub)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addStretch(1)
+        for text, icon_name, slot in (
+            ("Add images", "add", self.add_images),
+            ("Use a camera", "camera", self.capture_from_camera),
+            ("Scan a page", "scanner", self.scan_pages),
+        ):
+            b = button(text, icon_name)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        row.addStretch(1)
+        col.addLayout(row)
+        return holder
+
+    def _switch_view(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+        self.page_tools.setVisible(index == 0)
+        self.score_tools.setVisible(index == 1)
+        if index == 0:
+            self._refresh_page_view()
+        else:
+            self.stack.setCurrentWidget(self.preview)
+            self.page_hint.setText("")
+
+    # -- slide-over panel ------------------------------------------------
+    def _build_panel(self) -> QWidget:
+        self.panel = SlideOver("Score")
+        self.panel.closed.connect(self._refresh_guidance)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        inner.setMaximumWidth(372)
+        col = QVBoxLayout(inner)
+        col.setContentsMargins(0, 0, 4, 0)
+        col.setSpacing(16)
+
+        col.addWidget(self._card_reader())
+        col.addWidget(self._card_key())
+        col.addWidget(self._card_cleanup())
+        col.addWidget(self._card_save())
+        col.addStretch(1)
+        scroll.setWidget(inner)
+        self.panel.add(scroll)
+        return self.panel
+
+    def _card_reader(self) -> QWidget:
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
+        col.addWidget(SectionHeading("The music"))
+
+        card = Card()
+        self.score_summary = label("Nothing read yet. Add pages, then Transcribe.",
+                                   "Hint")
+        card.add(self.score_summary)
+
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        self.engine_dot = StatusDot()
+        status_row.addWidget(self.engine_dot, 0, Qt.AlignVCenter)
+        self.engine_label = label("Checking the note reader...", "Faint")
+        status_row.addWidget(self.engine_label, 1)
+        card.add_layout(status_row)
+        col.addWidget(card)
+        return holder
+
+    def _card_key(self) -> QWidget:
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
+        col.addWidget(SectionHeading("Change the key"))
+
+        card = Card()
+        self.cmb_mode = QComboBox()
+        self.cmb_mode.addItems(["To a key", "By half steps", "For an instrument"])
+        self.cmb_mode.currentIndexChanged.connect(self._mode_changed)
+        card.add(self._elastic(self.cmb_mode))
+
+        self.row_key = QWidget()
+        key_col = QVBoxLayout(self.row_key)
+        key_col.setContentsMargins(0, 0, 0, 0)
+        key_col.setSpacing(8)
+        self.cmb_source_key = QComboBox()
+        self._fill_keys(self.cmb_source_key, add_auto=True)
         self.cmb_target_key = QComboBox()
         self._fill_keys(self.cmb_target_key)
         self.cmb_target_key.setCurrentText("F major")
-        self.cmb_direction = QComboBox()
-        self.cmb_direction.addItems(["Nearest", "Up", "Down"])
-        f1.addRow("New key:", self.cmb_target_key)
-        f1.addRow("Direction:", self.cmb_direction)
-        self.stack.addWidget(w_key)
+        key_col.addWidget(self._field("From", self._elastic(self.cmb_source_key)))
+        key_col.addWidget(self._field("To", self._elastic(self.cmb_target_key)))
+        card.add(self.row_key)
 
-        w_semi = QWidget()
-        f2 = QFormLayout(w_semi)
-        f2.setContentsMargins(0, 0, 0, 0)
+        self.row_semitones = QWidget()
+        semi = QHBoxLayout(self.row_semitones)
+        semi.setContentsMargins(0, 0, 0, 0)
         self.spin_semitones = QSpinBox()
         self.spin_semitones.setRange(-24, 24)
         self.spin_semitones.setValue(2)
         self.spin_semitones.setSuffix(" half steps")
-        f2.addRow("Move by:", self.spin_semitones)
-        self.stack.addWidget(w_semi)
+        semi.addWidget(self.spin_semitones)
+        card.add(self.row_semitones)
+        self.row_semitones.hide()
 
-        w_instr = QWidget()
-        f3 = QFormLayout(w_instr)
-        f3.setContentsMargins(0, 0, 0, 0)
+        self.row_instrument = QWidget()
+        instr = QVBoxLayout(self.row_instrument)
+        instr.setContentsMargins(0, 0, 0, 0)
+        instr.setSpacing(8)
         self.cmb_instrument = QComboBox()
         self.cmb_instrument.addItems(list(scoring.INSTRUMENT_PRESETS.keys()))
         self.cmb_instrument.setCurrentIndex(1)
         self.cmb_instr_dir = QComboBox()
-        self.cmb_instr_dir.addItems(["Concert pitch -> player's part",
-                                     "Player's part -> concert pitch"])
-        f3.addRow("Instrument:", self.cmb_instrument)
-        f3.addRow("Direction:", self.cmb_instr_dir)
-        self.stack.addWidget(w_instr)
+        self.cmb_instr_dir.addItems(["Concert pitch to player's part",
+                                     "Player's part to concert pitch"])
+        instr.addWidget(self._elastic(self.cmb_instrument))
+        instr.addWidget(self._elastic(self.cmb_instr_dir))
+        card.add(self.row_instrument)
+        self.row_instrument.hide()
 
-        trl.addWidget(self.stack)
-
-        extra = QFormLayout()
+        more = Disclosure()
+        self.cmb_direction = QComboBox()
+        self.cmb_direction.addItems(["Nearest", "Up", "Down"])
+        more.add(self._field("Move", self._elastic(self.cmb_direction)))
         self.spin_octave = QSpinBox()
         self.spin_octave.setRange(-3, 3)
-        self.spin_octave.setValue(0)
         self.spin_octave.setSuffix(" octaves")
-        extra.addRow("Then shift:", self.spin_octave)
-        trl.addLayout(extra)
-        self.chk_simplify = QCheckBox("Prefer the easier spelling (Db over C#)")
+        more.add(self._field("Then shift", self.spin_octave))
+        self.chk_simplify = QCheckBox("Prefer the easier spelling (D♭ over C♯)")
         self.chk_simplify.setChecked(True)
-        trl.addWidget(self.chk_simplify)
+        more.add(self.chk_simplify)
+        card.add(more)
 
-        self.btn_transpose = QPushButton("Apply and preview")
+        self.btn_transpose = button("Apply", "key")
         self.btn_transpose.clicked.connect(self.apply_transpose)
-        trl.addWidget(self.btn_transpose)
-        self.transpose_label = QLabel("")
-        self.transpose_label.setWordWrap(True)
-        self.transpose_label.setStyleSheet("color:#2563eb;")
-        trl.addWidget(self.transpose_label)
-        lay.addWidget(tr)
+        card.add(self.btn_transpose)
 
-        # Export
-        ex = QGroupBox("4. Save")
-        el = QVBoxLayout(ex)
+        self.transpose_label = label("", "Accent")
+        self.transpose_label.setVisible(False)
+        card.add(self.transpose_label)
+        col.addWidget(card)
+        return holder
+
+    def _card_cleanup(self) -> QWidget:
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
+        col.addWidget(SectionHeading("Page clean-up"))
+
+        card = Card()
+        self.chk_crop = QCheckBox("Crop to the page")
+        self.chk_crop.setChecked(self.settings.auto_crop)
+        self.chk_deskew = QCheckBox("Straighten the staves")
+        self.chk_deskew.setChecked(self.settings.auto_deskew)
+        self.chk_enhance = QCheckBox("Even out the lighting")
+        self.chk_enhance.setChecked(self.settings.enhance)
+        for c in (self.chk_crop, self.chk_deskew, self.chk_enhance):
+            card.add(c)
+            c.toggled.connect(self._invalidate_processed)
+
+        more = Disclosure()
+        self.chk_binarize = QCheckBox("Hard black and white")
+        self.chk_binarize.setToolTip("For faint pencil or very grey photocopies")
+        self.chk_binarize.toggled.connect(self._invalidate_processed)
+        more.add(self.chk_binarize)
+        card.add(more)
+        col.addWidget(card)
+        return holder
+
+    def _card_save(self) -> QWidget:
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(8)
+        col.addWidget(SectionHeading("Save"))
+
+        card = Card()
         self.chk_pdf = QCheckBox("Sheet music PDF")
         self.chk_pdf.setChecked(True)
         self.chk_midi = QCheckBox("MIDI")
         self.chk_midi.setChecked(True)
-        self.chk_xml = QCheckBox("MusicXML (editable in MuseScore)")
-        self.chk_scanpdf = QCheckBox("Cleaned scan as PDF")
-        for c in (self.chk_pdf, self.chk_midi, self.chk_xml, self.chk_scanpdf):
-            el.addWidget(c)
-        ef = QFormLayout()
+        card.add(self.chk_pdf)
+        card.add(self.chk_midi)
+
+        more = Disclosure()
+        self.chk_xml = QCheckBox("MusicXML (to edit in MuseScore)")
+        self.chk_scanpdf = QCheckBox("The cleaned scan as a PDF")
+        more.add(self.chk_xml)
+        more.add(self.chk_scanpdf)
         self.edit_basename = QLineEdit()
         self.edit_basename.setPlaceholderText("File name")
-        ef.addRow("Name:", self.edit_basename)
-        folder_row = QHBoxLayout()
+        more.add(self._field("Name", self.edit_basename))
+        folder = QHBoxLayout()
+        folder.setSpacing(6)
         self.lbl_folder = QLineEdit(self.settings.output_dir)
         self.lbl_folder.setReadOnly(True)
-        pick = QPushButton("...")
-        pick.setMaximumWidth(34)
+        pick = icon_button("folder", "Choose a different folder", 32)
         pick.clicked.connect(self.pick_output_dir)
-        folder_row.addWidget(self.lbl_folder, 1)
-        folder_row.addWidget(pick)
-        ef.addRow("Folder:", folder_row)
-        el.addLayout(ef)
-        self.btn_export = QPushButton("Export")
-        self.btn_export.clicked.connect(self.export)
-        el.addWidget(self.btn_export)
-        self.btn_open_folder = QPushButton("Open output folder")
-        self.btn_open_folder.clicked.connect(self.open_output_folder)
-        el.addWidget(self.btn_open_folder)
-        lay.addWidget(ex)
+        folder.addWidget(self.lbl_folder, 1)
+        folder.addWidget(pick)
+        more.add_layout(folder)
+        card.add(more)
 
-        lay.addStretch(1)
-        for child in inner.findChildren(QFormLayout):
-            child.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-            child.setRowWrapPolicy(QFormLayout.WrapLongRows)
-            child.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        for label in (self.engine_label, self.score_summary, self.transpose_label):
-            label.setMaximumWidth(390)
-        scroll.setWidget(inner)
-        scroll.setMinimumWidth(410)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        return scroll
+        self.btn_export = button("Save files", "save")
+        self.btn_export.clicked.connect(self.export)
+        card.add(self.btn_export)
+
+        self.btn_open_folder = button("Open the folder", "folder", "link")
+        self.btn_open_folder.clicked.connect(self.open_output_folder)
+        card.add(self.btn_open_folder)
+        col.addWidget(card)
+        return holder
+
+    @staticmethod
+    def _elastic(combo: QComboBox) -> QComboBox:
+        """Let a combo shrink to its box rather than to its longest item."""
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(10)
+        combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        view = combo.view()
+        if view is not None:
+            view.setMinimumWidth(230)
+        return combo
+
+    @staticmethod
+    def _field(caption: str, widget: QWidget) -> QWidget:
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        col.addWidget(label(caption, "Faint"))
+        col.addWidget(widget)
+        return holder
+
+    def _mode_changed(self, index: int) -> None:
+        self.row_key.setVisible(index == 0)
+        self.row_semitones.setVisible(index == 1)
+        self.row_instrument.setVisible(index == 2)
+
+    # -- status strip ----------------------------------------------------
+    def _build_status(self) -> QWidget:
+        strip = QWidget()
+        strip.setObjectName("StatusStrip")
+        strip.setFixedHeight(40)
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(16, 0, 12, 0)
+        row.setSpacing(10)
+
+        self.status_dot = StatusDot()
+        row.addWidget(self.status_dot, 0, Qt.AlignVCenter)
+        self.status_label = label("Ready.", "Hint")
+        row.addWidget(self.status_label, 1)
+
+        self.progress = QProgressBar()
+        self.progress.setFixedWidth(180)
+        self.progress.setRange(0, 1)
+        self.progress.setValue(1)
+        self.progress.hide()
+        row.addWidget(self.progress)
+
+        self.cancel_btn = button("Cancel", variant="quiet")
+        self.cancel_btn.clicked.connect(self._cancel_job)
+        self.cancel_btn.hide()
+        row.addWidget(self.cancel_btn)
+        return strip
 
     @staticmethod
     def _fill_keys(combo: QComboBox, add_auto: bool = False) -> None:
@@ -448,9 +601,76 @@ class MainWindow(QMainWindow):
         for k in scoring.MINOR_KEYS:
             combo.addItem(f"{k[0].upper()}{k[1:]} minor")
 
-    # ------------------------------------------------------------------
-    # Logging / jobs
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Guidance - what should I do next?
+    # ==================================================================
+    def next_step(self) -> tuple[str, str, str, bool]:
+        """(key, button label, icon, enabled) for the primary action."""
+        if not self.pages and self.job is None:
+            return "add", "Add pages", "add", True
+        if self.job is None:
+            if not self._engine_ready:
+                return "engine", "Set up the reader", "wand", True
+            return "transcribe", "Transcribe", "transcribe", True
+        if self.job.transpose is None:
+            return "key", "Change the key", "key", True
+        return "save", "Save files", "save", True
+
+    def _refresh_guidance(self) -> None:
+        step, text, icon_name, enabled = self.next_step()
+        self.primary.setText(text)
+        self.primary.setIcon(icons.icon(icon_name, 17, theme.ON_ACCENT))
+        self.primary.setEnabled(enabled)
+
+        hints = {
+            "add": "Start with a page",
+            "engine": "The note reader needs setting up",
+            "transcribe": f"{len(self.pages)} page"
+                          f"{'s' if len(self.pages) != 1 else ''} ready to read",
+            "key": "Now pick a key",
+            "save": "Ready to save",
+        }
+        self.top_hint.setText(hints.get(step, ""))
+
+        has_pages = bool(self.pages)
+        for b in (self.btn_up, self.btn_down, self.btn_remove, self.btn_detect,
+                  self.btn_full, self.btn_rotate, self.chk_show_clean):
+            b.setEnabled(has_pages)
+        self.rail_empty.setVisible(not has_pages)
+        self.page_tools.setVisible(has_pages and self.view_switch.current == 0)
+        self.rail_heading.caption.setText(
+            f"PAGES  ·  {len(self.pages)}" if has_pages else "PAGES")
+
+        has_score = self.job is not None and self.job.source_score is not None
+        self.btn_transpose.setEnabled(has_score)
+        self.btn_export.setEnabled(has_score or self.chk_scanpdf.isChecked())
+        self.view_switch.buttons[1].setEnabled(has_score)
+
+    def _do_primary(self) -> None:
+        step, _, _, _ = self.next_step()
+        if step == "add":
+            self.add_images()
+        elif step == "engine":
+            self._offer_engine_help()
+        elif step == "transcribe":
+            self.transcribe()
+        elif step == "key":
+            if not self.panel.is_open:
+                self.panel.show_panel()
+            self.cmb_target_key.setFocus()
+            self.apply_transpose()
+        else:
+            self.export()
+
+    def toggle_panel(self) -> None:
+        self.panel.toggle()
+        self.btn_panel.setIcon(icons.icon(
+            "chevron-right" if self.panel.is_open else "chevron-left",
+            18, theme.TEXT_DIM))
+
+    # ==================================================================
+    # Logging and jobs
+    # ==================================================================
     def log(self, text: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         for line in str(text).splitlines() or [""]:
@@ -460,15 +680,17 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0 if on else 1)
         self.progress.setVisible(on)
         self.cancel_btn.setVisible(on)
+        self.status_dot.set_state("busy" if on else "idle")
         if message:
             self.status_label.setText(message)
-        for w in (self.btn_transcribe, self.btn_transpose, self.btn_export,
-                  self.act_transcribe, self.act_export, self.act_add, self.act_scan):
+        self.primary.setEnabled(not on)
+        for w in (self.btn_transpose, self.btn_export):
             w.setEnabled(not on)
+        if not on:
+            self._refresh_guidance()
 
     def _run(self, fn, on_done, message: str) -> None:
         if self._job is not None and self._job.isRunning():
-            QMessageBox.information(self, "Busy", "Something is already running.")
             return
         self._busy(True, message)
         self.log(message)
@@ -477,14 +699,15 @@ class MainWindow(QMainWindow):
         job.log.connect(self.log)
         job.step.connect(self.status_label.setText)
 
-        def _finished(result):
+        def finished(result):
             self._busy(False, "Ready.")
             self._job = None
             on_done(result)
 
-        def _failed(msg):
+        def failed(msg):
             self._busy(False, "Ready.")
             self._job = None
+            self.status_dot.set_state("bad")
             self.log("ERROR: " + msg)
             box = QMessageBox(self)
             box.setIcon(QMessageBox.Warning)
@@ -494,8 +717,8 @@ class MainWindow(QMainWindow):
                 box.setDetailedText(msg)
             box.exec()
 
-        job.done.connect(_finished)
-        job.failed.connect(_failed)
+        job.done.connect(finished)
+        job.failed.connect(failed)
         job.start()
 
     def _cancel_job(self) -> None:
@@ -503,9 +726,9 @@ class MainWindow(QMainWindow):
             self._job.cancel()
             self.status_label.setText("Cancelling...")
 
-    # ------------------------------------------------------------------
-    # Engine
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # The note reader
+    # ==================================================================
     def _startup_engine_check(self) -> None:
         self._engine_check(verbose=False)
 
@@ -517,97 +740,42 @@ class MainWindow(QMainWindow):
 
         def done(result):
             ok, message = result
-            if ok:
-                self.engine_label.setText(f"OMR engine ready:\n{path}")
-                self.engine_label.setStyleSheet("color:#15803d;")
-            else:
-                self.engine_label.setText(
-                    "Audiveris (the note-reading engine) is not set up yet. "
-                    "Open Settings to point ScoreShift at it, or install it from "
-                    "github.com/Audiveris/audiveris/releases."
-                )
-                self.engine_label.setStyleSheet("color:#b45309;")
+            self._engine_ready = ok
+            self.engine_dot.set_state("ok" if ok else "warn")
+            self.engine_label.setText(
+                "Note reader ready" if ok
+                else "Audiveris isn't set up yet - open Settings to point at it")
+            self.engine_label.setObjectName("Good" if ok else "Warn")
+            self.engine_label.setStyleSheet(
+                f"color: {theme.SUCCESS if ok else theme.WARNING}; font-size: 12px;")
+            self._refresh_guidance()
             if verbose:
                 box = QMessageBox(self)
                 box.setIcon(QMessageBox.Information if ok else QMessageBox.Warning)
-                box.setWindowTitle("OMR engine")
-                box.setText("Audiveris is ready." if ok else "Audiveris is not usable yet.")
+                box.setWindowTitle("Note reader")
+                box.setText("Audiveris is ready." if ok
+                            else "Audiveris is not usable yet.")
                 box.setDetailedText(message)
                 box.exec()
 
-        self._run(work, done, "Checking the OMR engine...")
+        self._run(work, done, "Checking the note reader...")
 
-    # ------------------------------------------------------------------
-    # Updates
-    # ------------------------------------------------------------------
-    def _startup_update_check(self) -> None:
-        """One quiet look at GitHub, at most once a day."""
-        from .. import updater
-        if not self.settings.auto_update_check:
-            return
-        if not updater.due_for_check(self.settings.last_update_check):
-            return
-        self.check_updates(quiet=True)
+    def _offer_engine_help(self) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("The note reader isn't set up")
+        box.setText("ScoreShift needs Audiveris to turn the picture into notes.\n\n"
+                    "It's free. Install it, then point ScoreShift at it in Settings.")
+        box.setInformativeText(f"Download: {omr.AUDIVERIS_DOWNLOAD}")
+        open_settings = box.addButton("Open settings", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is open_settings:
+            self.open_settings()
 
-    def check_updates(self, quiet: bool = False) -> None:
-        from .. import updater
-        from .update_dialog import CheckThread, UpdateDialog
-
-        if getattr(self, "_update_thread", None) is not None:
-            if self._update_thread.isRunning():
-                return
-
-        if not quiet:
-            self.status_label.setText("Checking for updates...")
-
-        thread = CheckThread(self.settings.update_repo, self)
-        self._update_thread = thread
-
-        def done(result) -> None:
-            self._update_thread = None
-            self.settings.last_update_check = time.time()
-            self.settings.save()
-            release = result.release
-            if not result.available:
-                message = (f"You have the latest version ({result.current})."
-                           if release is not None
-                           else (result.skipped_reason or "No updates found."))
-                self.log(message)
-                self.status_label.setText(message if not quiet else "Ready.")
-                if not quiet:
-                    QMessageBox.information(self, "Up to date", message)
-                return
-            if quiet and release.version == self.settings.skipped_version:
-                self.log(f"Version {release.version} is available "
-                         f"(skipped at your request).")
-                return
-            self.log(f"Version {release.version} is available.")
-            self.status_label.setText(f"ScoreShift {release.version} is available.")
-            dialog = UpdateDialog(release, self)
-            dialog.skip_requested.connect(self._skip_version)
-            dialog.exec()
-
-        def failed(message: str) -> None:
-            self._update_thread = None
-            self.log("Update check: " + message)
-            if quiet:
-                self.status_label.setText("Ready.")
-                return
-            self.status_label.setText("Ready.")
-            QMessageBox.warning(self, "Check for updates", message)
-
-        thread.finished_ok.connect(done)
-        thread.failed.connect(failed)
-        thread.start()
-
-    def _skip_version(self, version: str) -> None:
-        self.settings.skipped_version = version
-        self.settings.save()
-        self.log(f"Skipping version {version}.")
-
-    # ------------------------------------------------------------------
+    # ==================================================================
     # Pages
-    # ------------------------------------------------------------------
+    # ==================================================================
     def add_images(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Add page images", self.settings.last_input_dir,
@@ -624,15 +792,16 @@ class MainWindow(QMainWindow):
         def work(log, cancelled, step):
             items = []
             for i, p in enumerate(paths, 1):
-                step(f"Loading {p.name} ({i}/{len(paths)})...")
+                step(f"Loading {p.name} ({i} of {len(paths)})...")
                 img = pagedetect.imread(p)
                 h, w = img.shape[:2]
                 if max(h, w) > MAX_LOAD_DIM:
                     f = MAX_LOAD_DIM / max(h, w)
-                    img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
-                    log(f"{p.name}: scaled down to {img.shape[1]}x{img.shape[0]} px")
+                    img = cv2.resize(img, None, fx=f, fy=f,
+                                     interpolation=cv2.INTER_AREA)
                 quad = pagedetect.detect_page(img) if auto else None
-                log(f"{p.name}: {'page edges found' if quad is not None else 'no page edge detected'}")
+                log(f"{p.name}: "
+                    f"{'page edges found' if quad is not None else 'no page edge found'}")
                 items.append(PageItem(source=p, original=img, quad=quad))
             return items
 
@@ -641,16 +810,26 @@ class MainWindow(QMainWindow):
                 self.pages.append(item)
                 self._append_list_item(item)
             self.page_list.setCurrentRow(len(self.pages) - 1)
+            self.view_switch.select(0)
             self._suggest_basename()
-            self.status_label.setText(f"{len(self.pages)} page(s) ready.")
+            self.status_label.setText(
+                f"{len(self.pages)} page{'s' if len(self.pages) != 1 else ''} ready.")
+            self._refresh_guidance()
 
         self._run(work, done, f"Loading {len(paths)} image(s)...")
 
     def _append_list_item(self, item: PageItem) -> None:
-        thumb = cv2.resize(item.original, (108, 140), interpolation=cv2.INTER_AREA)
-        li = QListWidgetItem(QIcon(ndarray_to_qpixmap(thumb)), item.name)
+        thumb = cv2.resize(item.original, (THUMB.width(), THUMB.height()),
+                           interpolation=cv2.INTER_AREA)
+        li = QListWidgetItem(QIcon(ndarray_to_qpixmap(thumb)),
+                             f"  {len(self.pages)}")
         li.setToolTip(str(item.source))
+        li.setSizeHint(QSize(RAIL_WIDTH - 30, THUMB.height() + 16))
         self.page_list.addItem(li)
+
+    def _renumber(self) -> None:
+        for i in range(self.page_list.count()):
+            self.page_list.item(i).setText(f"  {i + 1}")
 
     def capture_from_camera(self) -> None:
         from .camera_dialog import CameraDialog
@@ -663,9 +842,9 @@ class MainWindow(QMainWindow):
         if not IS_WINDOWS:
             QMessageBox.information(
                 self, "Scanning",
-                "Scanning straight from a printer needs Windows. "
-                "Use 'Add images...' on this machine.")
+                "Scanning from a printer needs Windows. Use Add on this machine.")
             return
+
         def find(log, cancelled, step):
             step("Looking for scanners...")
             try:
@@ -675,8 +854,7 @@ class MainWindow(QMainWindow):
             if not devices:
                 raise RuntimeError(
                     "No scanner was found.\nCheck the printer is switched on and "
-                    "connected, and that its Windows scanner (WIA) driver is "
-                    "installed.")
+                    "that its Windows scanner (WIA) driver is installed.")
             log("Scanners: " + ", ".join(d.name for d in devices))
             return devices
 
@@ -691,10 +869,8 @@ class MainWindow(QMainWindow):
         out = work_dir() / "scans"
         native = dlg.chk_native.isChecked()
         device_id = dlg.device_id
-        dpi = self.settings.scan_dpi
-        mode = self.settings.scan_mode
-        source = self.settings.scan_source
-        max_pages = dlg.spin_pages.value()
+        dpi, mode = self.settings.scan_dpi, self.settings.scan_mode
+        source, max_pages = self.settings.scan_source, dlg.spin_pages.value()
 
         def work(log, cancelled, step):
             if native:
@@ -716,6 +892,8 @@ class MainWindow(QMainWindow):
             return
         self.pages.pop(row)
         self.page_list.takeItem(row)
+        self._renumber()
+        self._refresh_guidance()
 
     def move_page(self, delta: int) -> None:
         row = self.page_list.currentRow()
@@ -726,31 +904,30 @@ class MainWindow(QMainWindow):
         item = self.page_list.takeItem(row)
         self.page_list.insertItem(new, item)
         self.page_list.setCurrentRow(new)
+        self._renumber()
 
     def _current_page(self) -> PageItem | None:
         row = self.page_list.currentRow()
-        if 0 <= row < len(self.pages):
-            return self.pages[row]
-        return None
-
-    def _on_page_selected(self, row: int) -> None:
-        self._refresh_page_view()
+        return self.pages[row] if 0 <= row < len(self.pages) else None
 
     def _refresh_page_view(self) -> None:
+        if self.stack.currentIndex() != 0:
+            return
         item = self._current_page()
         if item is None:
-            self.crop_view.set_image(np.full((600, 800), 245, np.uint8), editable=False)
+            self.stack.setCurrentWidget(self.empty_state)
+            self.page_hint.setText("")
             return
+        self.stack.setCurrentWidget(self.crop_view)
         if self.chk_show_clean.isChecked():
             result = self._process_item(item)
             self.crop_view.set_image(result.image, editable=False)
-            self.page_hint.setText(
-                "Cleaned preview - this is what the note reader sees. "
-                + " ".join(result.notes))
+            self.page_hint.setText("This is what the note reader sees.  "
+                                   + " ".join(result.notes))
         else:
             self.crop_view.set_image(item.original, item.quad, editable=True)
             self.page_hint.setText(
-                "Drag the blue corners to match the page. Ctrl + mouse wheel zooms.")
+                "Drag the corners to match the page.  Ctrl + wheel zooms.")
 
     def _on_quad_changed(self) -> None:
         item = self._current_page()
@@ -772,38 +949,13 @@ class MainWindow(QMainWindow):
         quad = pagedetect.detect_page(item.original)
         if quad is None:
             self.log(f"{item.name}: no page edge found.")
-            QMessageBox.information(
-                self, "No edge found",
-                "I couldn't find a page outline. If the page fills the frame, "
-                "'Use whole image' is the right choice - otherwise drag the "
-                "corners yourself.")
+            self.status_label.setText(
+                "No page outline found - drag the corners, or use Whole image.")
             return
         item.quad = quad
         item.processed = None
         self.crop_view.set_quad(quad)
         self.log(f"{item.name}: page edges detected.")
-
-    def detect_all(self) -> None:
-        pages = list(self.pages)
-
-        def work(log, cancelled, step):
-            found = 0
-            for i, p in enumerate(pages, 1):
-                if cancelled():
-                    break
-                step(f"Detecting page {i}/{len(pages)}...")
-                q = pagedetect.detect_page(p.original)
-                p.quad = q
-                p.processed = None
-                found += q is not None
-                log(f"{p.name}: {'found' if q is not None else 'not found'}")
-            return found
-
-        def done(found):
-            self._refresh_page_view()
-            self.status_label.setText(f"Page edges found on {found} of {len(pages)} page(s).")
-
-        self._run(work, done, "Detecting page edges...")
 
     def reset_crop(self) -> None:
         item = self._current_page()
@@ -823,16 +975,10 @@ class MainWindow(QMainWindow):
         item.quad = None
         item.processed = None
         row = self.page_list.currentRow()
-        thumb = cv2.resize(item.original, (108, 140), interpolation=cv2.INTER_AREA)
+        thumb = cv2.resize(item.original, (THUMB.width(), THUMB.height()),
+                           interpolation=cv2.INTER_AREA)
         self.page_list.item(row).setIcon(QIcon(ndarray_to_qpixmap(thumb)))
         self._refresh_page_view()
-
-    def _process_item(self, item: PageItem) -> pagedetect.PageResult:
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            return self._process_item_inner(item)
-        finally:
-            QApplication.restoreOverrideCursor()
 
     def _clean_options(self) -> CleanOptions:
         return CleanOptions(
@@ -842,23 +988,25 @@ class MainWindow(QMainWindow):
             binarize=self.chk_binarize.isChecked(),
         )
 
-    def _process_item_inner(self, item: PageItem) -> pagedetect.PageResult:
-        result = pagedetect.process_page(
-            item.original, quad=item.quad, **self._clean_options().as_kwargs())
-        item.processed = result.image
-        item.notes = result.notes
-        return result
+    def _process_item(self, item: PageItem) -> pagedetect.PageResult:
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = pagedetect.process_page(
+                item.original, quad=item.quad, **self._clean_options().as_kwargs())
+            item.processed = result.image
+            item.notes = result.notes
+            return result
+        finally:
+            QApplication.restoreOverrideCursor()
 
-    # ------------------------------------------------------------------
-    # Transcription
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Transcribe
+    # ==================================================================
     def transcribe(self) -> None:
         if not self.pages:
-            QMessageBox.information(self, "Nothing to read",
-                                    "Add or scan at least one page first.")
+            self.status_label.setText("Add or scan at least one page first.")
             return
-        audiveris = self.settings.audiveris()
-        if audiveris is None:
+        if self.settings.audiveris() is None:
             self._offer_engine_help()
             return
 
@@ -873,16 +1021,18 @@ class MainWindow(QMainWindow):
                 quads=[p.quad for p in pages], log=log, cancel=cancelled)
             for page, result in zip(pages, cleaned):
                 page.processed = result.image
-            step("Reading the notes with Audiveris - this can take a minute...")
+            step("Reading the notes - this can take a minute...")
             return engine.transcribe(cleaned, log=log, cancel=cancelled)
 
         def done(job: ScoreJob):
             self.job = job
             self._show_score_info(job.info, seconds=job.omr_seconds)
             self._suggest_basename()
-            self._render_preview("Transcribed score (original key)")
+            self._render_preview("Original key")
+            if not self.panel.is_open:
+                self.panel.show_panel()
 
-        self._run(work, done, "Transcribing...")
+        self._run(work, done, "Reading the notes...")
 
     def open_score_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -900,57 +1050,45 @@ class MainWindow(QMainWindow):
             self.job = job
             self._show_score_info(job.info)
             self._suggest_basename()
-            self._render_preview("Loaded score (original key)")
+            self._render_preview("Original key")
 
         self._run(work, done, "Opening score...")
 
     def _show_score_info(self, info: scoring.ScoreInfo | None,
                          seconds: float | None = None) -> None:
         if info is None:
-            self.score_summary.setText("No score loaded yet.")
+            self.score_summary.setText("Nothing read yet.")
             return
         bits = []
         if info.notated_key:
-            bits.append(f"Written key: <b>{info.notated_key}</b>")
-        if info.detected_key and info.detected_key != info.notated_key:
-            bits.append(f"Sounds like: {info.detected_key}")
+            bits.append(f"<span style='color:{theme.TEXT}; font-size:15px; "
+                        f"font-weight:600'>{info.notated_key}</span>")
+        facts = []
         if info.time_signature:
-            bits.append(f"Time: {info.time_signature}")
-        bits.append(f"{info.parts} part(s), {info.measures} bars, {info.notes} notes")
+            facts.append(info.time_signature)
+        facts.append(f"{info.measures} bars")
+        facts.append(f"{info.parts} part{'s' if info.parts != 1 else ''}")
         if info.lowest and info.highest:
-            bits.append(f"Range: {info.lowest} to {info.highest}")
-        if seconds:
-            bits.append(f"Read in {seconds:.0f}s")
+            facts.append(f"{info.lowest}–{info.highest}")
+        bits.append(f"<span style='color:{theme.TEXT_DIM}'>"
+                    + "  ·  ".join(facts) + "</span>")
         self.score_summary.setText("<br>".join(bits))
         for w in info.warnings:
             self.log("Note: " + w)
+        if seconds:
+            self.log(f"Read in {seconds:.0f}s.")
         if info.best_key:
             idx = self.cmb_source_key.findText(info.best_key, Qt.MatchFixedString)
             if idx >= 0:
                 self.cmb_source_key.setCurrentIndex(idx)
+        self._refresh_guidance()
 
-    def _offer_engine_help(self) -> None:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
-        box.setWindowTitle("The note-reading engine isn't set up")
-        box.setText(
-            "ScoreShift needs Audiveris to turn the picture into notes.\n\n"
-            "It's free. Install it, then point ScoreShift at it in Settings.")
-        box.setInformativeText(f"Download: {omr.AUDIVERIS_DOWNLOAD}")
-        open_settings = box.addButton("Open settings", QMessageBox.AcceptRole)
-        box.addButton("Later", QMessageBox.RejectRole)
-        box.exec()
-        if box.clickedButton() is open_settings:
-            self.open_settings()
-
-    # ------------------------------------------------------------------
-    # Transposition
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Transpose
+    # ==================================================================
     def apply_transpose(self) -> None:
         if self.job is None or self.job.source_score is None:
-            QMessageBox.information(
-                self, "No score yet",
-                "Transcribe your pages first, or open a MusicXML file.")
+            self.status_label.setText("Read some pages first.")
             return
 
         mode = self.cmb_mode.currentIndex()
@@ -978,25 +1116,28 @@ class MainWindow(QMainWindow):
         def done(updated: ScoreJob):
             self.job = updated
             res = updated.transpose
-            text = (f"{res.from_key} → {res.to_key} — {res.interval_name.lower()} "
-                    f"({res.semitones:+d} half steps)")
-            if res.notes:
-                text += "\n" + "\n".join(res.notes)
-            self.transpose_label.setText(text)
+            self.transpose_label.setVisible(True)
+            self.transpose_label.setText(
+                f"{res.from_key} → {res.to_key}"
+                f"<br><span style='color:{theme.TEXT_DIM}; font-weight:400'>"
+                f"{res.interval_name.lower()}, {res.semitones:+d} half steps</span>")
+            for n in res.notes:
+                self.log(n)
             self._suggest_basename()
-            self._render_preview(f"Transposed to {res.to_key}")
+            self._render_preview(f"In {res.to_key}")
 
         self._run(work, done, "Transposing...")
 
     def _render_preview(self, caption: str) -> None:
         if self.job is None:
             return
-        self.tabs.setCurrentIndex(1)
-        self.preview.set_message("Engraving preview...")
+        self.view_switch.buttons[1].setEnabled(True)
+        self.view_switch.select(1)
+        self.preview.set_message("Engraving...")
         engine, job = self.engine, self.job
 
         def work(log, cancelled, step):
-            step("Engraving preview...")
+            step("Engraving the preview...")
             try:
                 return engine.preview_svg(job)
             except exporter.ExportError as exc:
@@ -1009,14 +1150,13 @@ class MainWindow(QMainWindow):
                 self.preview_label.setText(caption)
             else:
                 self.preview.set_message(
-                    "Preview isn't available for this score, but exporting "
-                    "still works.")
+                    "No preview for this score - saving still works.")
 
-        self._run(work, done, "Engraving preview...")
+        self._run(work, done, "Engraving the preview...")
 
-    # ------------------------------------------------------------------
-    # Export
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Save
+    # ==================================================================
     def _suggest_basename(self) -> None:
         if self.edit_basename.isModified():
             return
@@ -1055,9 +1195,7 @@ class MainWindow(QMainWindow):
         has_score = self.job is not None and (
             self.job.current_score is not None or self.job.source_score is not None)
         if not has_score and not want_scan:
-            QMessageBox.information(
-                self, "Nothing to save",
-                "Transcribe a score first, or tick 'Cleaned scan as PDF'.")
+            self.status_label.setText("Nothing to save yet.")
             return
 
         basename = self.edit_basename.text().strip() or "Score"
@@ -1086,23 +1224,77 @@ class MainWindow(QMainWindow):
             return engine.export(job, out_dir, basename, request, log=log)
 
         def done(report: exporter.ExportReport):
-            names = "\n".join(f"  {p.name}" for p in report.written)
-            msg = f"Saved to {out_dir}:\n{names}" if report.written else "Nothing was saved."
-            if report.skipped:
-                msg += "\n\nSkipped:\n" + "\n".join(f"  {s}" for s in report.skipped)
-            self.status_label.setText(
-                f"Saved {len(report.written)} file(s) to {out_dir}.")
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Information if report.written else QMessageBox.Warning)
-            box.setWindowTitle("Export")
-            box.setText(msg)
-            box.exec()
+            names = ", ".join(p.name for p in report.written)
+            if report.written:
+                self.status_dot.set_state("ok")
+                self.status_label.setText(f"Saved to {out_dir.name}:  {names}")
+            else:
+                self.status_label.setText("Nothing was saved.")
+            for skipped in report.skipped:
+                self.log("Skipped - " + skipped)
+            self.log(f"Saved {len(report.written)} file(s) to {out_dir}.")
 
-        self._run(work, done, "Exporting...")
+        self._run(work, done, "Saving...")
 
-    # ------------------------------------------------------------------
-    # Misc
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Updates, settings, misc
+    # ==================================================================
+    def _startup_update_check(self) -> None:
+        from .. import updater
+        if not self.settings.auto_update_check:
+            return
+        if not updater.due_for_check(self.settings.last_update_check):
+            return
+        self.check_updates(quiet=True)
+
+    def check_updates(self, quiet: bool = False) -> None:
+        from .update_dialog import CheckThread, UpdateDialog
+
+        if getattr(self, "_update_thread", None) is not None:
+            if self._update_thread.isRunning():
+                return
+        if not quiet:
+            self.status_label.setText("Checking for updates...")
+
+        thread = CheckThread(self.settings.update_repo, self)
+        self._update_thread = thread
+
+        def done(result) -> None:
+            self._update_thread = None
+            self.settings.last_update_check = time.time()
+            self.settings.save()
+            release = result.release
+            if not result.available:
+                message = (f"You have the latest version ({result.current})."
+                           if release is not None
+                           else (result.skipped_reason or "No updates found."))
+                self.log(message)
+                if not quiet:
+                    self.status_label.setText(message)
+                return
+            if quiet and release.version == self.settings.skipped_version:
+                self.log(f"Version {release.version} available (skipped).")
+                return
+            self.log(f"Version {release.version} is available.")
+            dialog = UpdateDialog(release, self)
+            dialog.skip_requested.connect(self._skip_version)
+            dialog.exec()
+
+        def failed(message: str) -> None:
+            self._update_thread = None
+            self.log("Update check: " + message)
+            if not quiet:
+                self.status_label.setText(message)
+
+        thread.finished_ok.connect(done)
+        thread.failed.connect(failed)
+        thread.start()
+
+    def _skip_version(self, version: str) -> None:
+        self.settings.skipped_version = version
+        self.settings.save()
+        self.log(f"Skipping version {version}.")
+
     def open_settings(self) -> None:
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec():
@@ -1111,14 +1303,56 @@ class MainWindow(QMainWindow):
             self._engine_check(verbose=False)
 
     def about(self) -> None:
+        from .. import __version__
         QMessageBox.about(
             self, "About ScoreShift",
-            "<h3>ScoreShift</h3>"
+            f"<h3>ScoreShift {__version__}</h3>"
             "<p>Scan or photograph sheet music, straighten and crop the page, "
             "read the notes, and save the music in any key.</p>"
             "<p>Note reading by <b>Audiveris</b>. Engraving by <b>MuseScore</b> "
-            "or the built-in <b>Verovio</b> engine. Music handling by "
-            "<b>music21</b>.</p>")
+            "or <b>Verovio</b>. Music handling by <b>music21</b>.</p>")
+
+    # ==================================================================
+    # Drag and drop
+    # ==================================================================
+    IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+
+    def _dropped_images(self, event) -> list[Path]:
+        if not event.mimeData().hasUrls():
+            return []
+        out = []
+        for url in event.mimeData().urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.suffix.lower() in self.IMAGE_SUFFIXES and path.is_file():
+                out.append(path)
+        return out
+
+    def dragEnterEvent(self, event):  # noqa: D102, N802
+        if self._dropped_images(event):
+            event.acceptProposedAction()
+            self.empty_state.setStyleSheet(
+                self.empty_state.styleSheet().replace(
+                    theme.BORDER_STRONG, theme.ACCENT))
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):  # noqa: D102, N802
+        self.empty_state.setStyleSheet(
+            self.empty_state.styleSheet().replace(theme.ACCENT,
+                                                  theme.BORDER_STRONG))
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):  # noqa: D102, N802
+        paths = self._dropped_images(event)
+        self.empty_state.setStyleSheet(
+            self.empty_state.styleSheet().replace(theme.ACCENT,
+                                                  theme.BORDER_STRONG))
+        if paths:
+            event.acceptProposedAction()
+            self.log(f"Dropped {len(paths)} file(s).")
+            self._load_paths(paths)
 
     def closeEvent(self, event):  # noqa: D102, N802
         self.settings.auto_crop = self.chk_crop.isChecked()
@@ -1136,6 +1370,9 @@ def run() -> int:
     QApplication.setOrganizationName("ScoreShift")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setPalette(theme.palette())
+    app.setFont(theme.base_font())
+    app.setStyleSheet(theme.stylesheet())
     win = MainWindow()
     win.show()
     return app.exec()

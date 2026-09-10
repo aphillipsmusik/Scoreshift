@@ -6,14 +6,16 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (QLabel, QScrollArea, QVBoxLayout, QWidget)
 
-PAGE_BG = "#ffffff"
+from . import theme
+
+PAGE_BG = theme.PAPER
 
 
 class _Page(QSvgWidget):
     def __init__(self, svg: str, width: int) -> None:
         super().__init__()
         self.load(QByteArray(svg.encode("utf-8")))
-        self.setStyleSheet(f"background:{PAGE_BG}; border:1px solid #d0d3d8;")
+        self.setStyleSheet(f"background:{PAGE_BG}; border:1px solid {theme.BORDER_STRONG};")
         self.set_page_width(width)
 
     def set_page_width(self, width: int) -> None:
@@ -34,7 +36,7 @@ class ScorePreview(QScrollArea):
         self._svgs: list[str] = []
 
         self._holder = QWidget()
-        self._holder.setStyleSheet("background:#2b2e33;")
+        self._holder.setStyleSheet(f"background:{theme.CANVAS};")
         self._layout = QVBoxLayout(self._holder)
         self._layout.setContentsMargins(24, 24, 24, 24)
         self._layout.setSpacing(18)
@@ -46,7 +48,7 @@ class ScorePreview(QScrollArea):
             "Add or scan your pages, run Transcribe, then choose a key."
         )
         self._placeholder.setAlignment(Qt.AlignCenter)
-        self._placeholder.setStyleSheet("color:#aeb4bd; font-size:14px;")
+        self._placeholder.setStyleSheet(f"color:{theme.TEXT_FAINT}; font-size:14px;")
         self._layout.addWidget(self._placeholder)
 
     def clear(self) -> None:

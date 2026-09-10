@@ -49,6 +49,10 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 def main() -> int:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    from scoreshift.ui import theme
+    app.setPalette(theme.palette())
+    app.setFont(theme.base_font())
+    app.setStyleSheet(theme.stylesheet())
     win = MainWindow()
     win.resize(1500, 950)
     win.show()
@@ -57,6 +61,9 @@ def main() -> int:
     check("window built", win.isVisible())
     check("engine status reported", bool(win.engine_label.text()),
           win.engine_label.text()[:60])
+    check("the first thing to do is suggested", win.next_step()[0] == "add",
+          win.primary.text())
+    win.grab().save(str(OUT / "ui_empty.png"))
 
     win._load_paths([FIX / "photo_p1.jpg", FIX / "photo_p2.jpg"])
     wait_idle(app, win)
@@ -86,10 +93,10 @@ def main() -> int:
     wait_idle(app, win)          # preview render job
     pump(app, 1.0)
     check("transposition reported in the UI", "F major" in win.transpose_label.text(),
-          win.transpose_label.text().split("\n")[0])
+          win.transpose_label.text())
     check("score preview engraved", win.preview._svgs != [],
           f"{len(win.preview._svgs)} page(s)")
-    win.tabs.setCurrentIndex(1)
+    win.view_switch.select(1)
     pump(app, 0.8)
     win.grab().save(str(OUT / "ui_score.png"))
 
