@@ -53,10 +53,25 @@ jobs:
           "$hash  $($setup.Name)" | Set-Content dist\SHA256SUMS.txt -Encoding ascii
           Get-Content dist\SHA256SUMS.txt
 
+      # The in-app updater shows these notes, so give it the changelog entry
+      # for this version rather than a bare list of commits.
+      - name: Release notes from the changelog
+        run: |
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern '^## ' | Select-Object -First 1).LineNumber
+          $next  = ($lines | Select-String -Pattern '^## ' | Select-Object -Skip 1 -First 1).LineNumber
+          if (-not $next) { $next = $lines.Count + 1 }
+          $body = $lines[$start..($next - 2)] -join "`n"
+          if (-not $body.Trim()) { $body = "See the changelog." }
+          Set-Content -Path release-notes.md -Value $body.Trim()
+          Get-Content release-notes.md
+
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/ScoreShift-Setup-*.exe
             dist/SHA256SUMS.txt
+          body_path: release-notes.md
+          append_body: true
           generate_release_notes: true
