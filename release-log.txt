@@ -1,0 +1,14 @@
+
+  Releasing ScoreShift 1.3
+
+Version set to 1.3 in scoreshift\__init__.py and packaging\installer.iss
+
+  Building ScoreShift
+  -------------------
+Python: C:\Users\aphil\AppData\Local\Programs\Python\Python310\python.exe
+Creating the build environment...
+Installing build dependencies...
+Drawing the app icon...
+wrote C:\Users\aphil\ScoreShift-build\repo\assets\scoreshift.png
+wrote C:\Users\aphil\ScoreShift-build\repo\assets\scoreshift.ico
+Freezing the app with PyInstaller (a few minutes)...

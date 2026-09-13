@@ -25,9 +25,20 @@ function Say([string]$t, [string]$c = "Gray") { Write-Host $t -ForegroundColor $
 if ($Version -notmatch '^\d+\.\d+(\.\d+)?$') {
     Say "Version should look like 1.3 or 1.3.1" "Red"; exit 1
 }
-if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-    Say "The GitHub CLI is not installed. winget install -e --id GitHub.cli" "Red"; exit 1
+# The GitHub CLI is optional: without it we push the tag and let the
+# repository's workflow build and publish the release instead.
+function Find-Gh {
+    $onPath = (Get-Command gh -ErrorAction SilentlyContinue).Source
+    if ($onPath) { return $onPath }
+    foreach ($candidate in @(
+        "$PSScriptRoot\..\..\tools\gh\bin\gh.exe",
+        "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe",
+        "$env:ProgramFiles\GitHub CLI\gh.exe")) {
+        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
+    }
+    return $null
 }
+$gh = Find-Gh
 
 Say ""
 Say "  Releasing ScoreShift $Version" "Cyan"
@@ -64,6 +75,21 @@ Say "SHA256 $hash" "Green"
 & git push
 & git push origin "v$Version" -f
 
+$authed = $false
+if ($gh) {
+    & $gh auth status 2>&1 | Out-Null
+    $authed = ($LASTEXITCODE -eq 0)
+}
+
+if (-not $authed) {
+    Say ""
+    Say "No signed-in GitHub CLI here, so the tag does the work instead." "Yellow"
+    Say "The repository's workflow is building v$Version now and will attach" "Yellow"
+    Say "the installer to the release when it finishes." "Yellow"
+    Say "  https://github.com/aphillipsmusik/Scoreshift/actions" "Cyan"
+    exit 0
+}
+
 $notesArg = @()
 if ($Notes) { $notesArg = @("--notes", $Notes) }
 elseif (Test-Path "CHANGELOG.md") { $notesArg = @("--notes-file", "CHANGELOG.md") }
@@ -72,8 +98,12 @@ else { $notesArg = @("--generate-notes") }
 $draftArg = @()
 if ($Draft) { $draftArg = @("--draft") }
 
-& gh release create "v$Version" $setup $sums --title "ScoreShift $Version" @notesArg @draftArg
-if ($LASTEXITCODE -ne 0) { Say "gh release create failed." "Red"; exit 1 }
+& $gh release create "v$Version" $setup $sums --title "ScoreShift $Version" @notesArg @draftArg
+if ($LASTEXITCODE -ne 0) {
+    Say "gh release create failed - the tag is pushed, so the workflow will" "Yellow"
+    Say "publish the release instead." "Yellow"
+    exit 0
+}
 
 Say ""
 Say "Published v$Version. Anyone running an older ScoreShift will be offered it." "Cyan"

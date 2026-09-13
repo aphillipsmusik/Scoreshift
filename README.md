@@ -55,7 +55,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.2.exe         the installer
+dist\ScoreShift-Setup-1.3.exe         the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -137,7 +137,7 @@ scoreshift/
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script
 .github/workflows/     tag a version, get an installer attached to the release
-tests/                 114 checks, none of which need a display or a camera
+tests/                 121 checks, none of which need a display or a camera
 ```
 
 Run the tests (from a source checkout):
@@ -158,9 +158,10 @@ powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.3
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,
-tags, and publishes a GitHub release with the installer attached — which is
-exactly what the in-app updater looks for. Pushing a `v*` tag also triggers the
-GitHub Actions workflow, so a release can be cut without a Windows machine.
+commits, tags and pushes. If a signed-in GitHub CLI is around it publishes the
+release with the installer attached; if not, the pushed tag triggers the
+workflow, which builds on a Windows runner and attaches the installer itself.
+Either way the release ends up with the two files the in-app updater looks for.
 
 ## Credits
 
