@@ -22,7 +22,9 @@ printable PDF and a MIDI file.
    (B♭ trumpet, E♭ alto sax, F horn…). It respells enharmonically when that makes
    the part easier to read — D♭ major instead of C♯ major.
 5. **Save.** Engraved PDF, MIDI, MusicXML, and optionally the cleaned scan as its
-   own PDF.
+   own PDF. For anything with more than one part, *Each of the N parts in its own
+   file as well* adds a PDF and a MIDI per part — *Fanfare - Trumpet in Bb.pdf* —
+   named after the parts on the page.
 
 ## Installing
 
@@ -55,7 +57,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.3.exe         the installer
+dist\ScoreShift-Setup-1.4.exe         the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -91,6 +93,11 @@ being more accurate.
 order) before you transcribe — the pages are read as one continuous piece, so
 repeats and ties carry across page breaks.
 
+**Parts.** The part files come from the parts Audiveris found, so they are only
+as good as the page: on a tight piano score where two hands share a staff,
+expect one part, not two. Check the part count in the summary line before you
+print a set.
+
 **Check the transcription.** OMR is very good, not perfect. On dense or
 handwritten music, expect to fix a few things: tick *MusicXML* on export and
 open the file in MuseScore before you print.
@@ -111,7 +118,8 @@ ScoreShift.exe --server --host 0.0.0.0 --port 8765
 ```
 
 (Also on the Start menu as *ScoreShift API server*.) Interactive docs at
-`/docs`. Set the `SCORESHIFT_API_KEY` environment variable before exposing it
+`/docs`. `GET /v1/scores/{id}/parts` lists the parts, and `?part=2` on the
+download returns that part on its own. Set the `SCORESHIFT_API_KEY` environment variable before exposing it
 beyond your own machine. **PORTING-iOS.md** has the full plan — what runs on the
 phone, what has to stay on a server, and the auto-shutter thresholds worth
 carrying over.
@@ -137,7 +145,8 @@ scoreshift/
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script
 .github/workflows/     tag a version, get an installer attached to the release
-tests/                 121 checks, none of which need a display or a camera
+tests/                 180 checks, none of which need a display or a camera
+                       (a couple depend on what is installed)
 ```
 
 Run the tests (from a source checkout):
@@ -146,15 +155,16 @@ Run the tests (from a source checkout):
 .venv\Scripts\python tests\make_fixture.py     # builds a synthetic photo
 .venv\Scripts\python tests\test_pipeline.py    # 42 checks
 .venv\Scripts\python tests\test_camera.py      # 24 checks
-.venv\Scripts\python tests\test_service.py     # 24 checks
+.venv\Scripts\python tests\test_service.py     # 25 checks
 .venv\Scripts\python tests\test_updater.py   # 31 checks
+.venv\Scripts\python tests\test_parts.py     # 58 checks
 .venv\Scripts\python tests\test_ui.py          # window smoke test
 ```
 
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.3
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.4
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,

@@ -9,7 +9,8 @@ Endpoints (all under /v1):
     GET    /scores/{id}                what we know about that piece
     POST   /scores/{id}/transpose      change the key
     GET    /scores/{id}/preview        engraved SVG pages
-    GET    /scores/{id}/download       pdf | midi | musicxml
+    GET    /scores/{id}/parts          the parts this piece has
+    GET    /scores/{id}/download       pdf | midi | musicxml, whole or one part
     DELETE /scores/{id}                throw it away
 """
 from __future__ import annotations
@@ -28,6 +29,7 @@ from .. import __version__
 from ..config import Settings, work_dir
 from ..engine import (CleanOptions, EngineError, ExportRequest, ScoreJob,
                       ScoreShiftEngine, TransposeRequest, safe_name)
+from ..pipeline import export as exporter
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -39,6 +41,10 @@ except ImportError as exc:  # noqa: BLE001
         "    pip install -r requirements-server.txt"
     ) from exc
 
+
+_MEDIA = {"pdf": "application/pdf", "midi": "audio/midi",
+          "musicxml": "application/vnd.recordare.musicxml+xml"}
+_SUFFIX = {"pdf": "pdf", "midi": "mid", "musicxml": "musicxml"}
 
 MAX_PAGES = 40
 MAX_BYTES = 40 * 1024 * 1024
@@ -253,13 +259,31 @@ def create_app(engine: ScoreShiftEngine | None = None) -> FastAPI:
         svgs = engine.preview_svg(entry.job, max_pages=max(1, min(pages, 24)))
         return JSONResponse({"job_id": job_id, "pages": svgs})
 
+    @app.get("/v1/scores/{job_id}/parts")
+    def parts(job_id: str) -> JSONResponse:
+        """The parts of this piece, in score order, as ?part= indices."""
+        entry = registry.get(job_id)
+        job = entry.job
+        sc = job.current_score or job.source_score
+        if sc is None:
+            raise HTTPException(409, "This piece has not been read yet.")
+        labels = exporter.part_labels(sc)
+        return JSONResponse({
+            "job_id": job_id,
+            "parts": [{"part": i + 1, "name": name}
+                      for i, name in enumerate(labels)],
+        })
+
     @app.get("/v1/scores/{job_id}/download")
     def download(job_id: str, format: Literal["pdf", "midi", "musicxml"] = "pdf",
-                 name: str | None = None) -> FileResponse:
+                 name: str | None = None,
+                 part: int | None = None) -> FileResponse:
         entry = registry.get(job_id)
         job = entry.job
         basename = safe_name(name or f"score-{job.job_id}"
                              + (f" in {job.key_now}" if job.key_now else ""))
+        if part is not None:
+            return _download_part(entry, basename, format, part)
         cached = entry.exports.get(format)
         if cached and cached.exists():
             return FileResponse(str(cached), filename=cached.name)
@@ -276,9 +300,44 @@ def create_app(engine: ScoreShiftEngine | None = None) -> FastAPI:
             raise HTTPException(500, detail)
         path = report.written[0]
         entry.exports[format] = path
-        media = {"pdf": "application/pdf", "midi": "audio/midi",
-                 "musicxml": "application/vnd.recordare.musicxml+xml"}[format]
-        return FileResponse(str(path), filename=path.name, media_type=media)
+        return FileResponse(str(path), filename=path.name,
+                            media_type=_MEDIA[format])
+
+    def _download_part(entry: Entry, basename: str, format: str,
+                       part: int) -> FileResponse:
+        """One part on its own - what a player on a phone actually wants."""
+        job = entry.job
+        sc = job.current_score or job.source_score
+        if sc is None:
+            raise HTTPException(409, "This piece has not been read yet.")
+        labels = exporter.part_labels(sc)
+        if not 1 <= part <= len(labels):
+            raise HTTPException(
+                404, f"This piece has {len(labels)} part(s); there is no "
+                     f"part {part}.")
+        label = labels[part - 1]
+        key = f"{format}:part{part}"
+        cached = entry.exports.get(key)
+        if cached and cached.exists():
+            return FileResponse(str(cached), filename=cached.name,
+                                media_type=_MEDIA[format])
+        out_dir = engine.workspace / "jobs" / job.job_id / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        single = exporter.score_for_part(sc, part - 1, label)
+        target = out_dir / f"{basename} - {label}.{_SUFFIX[format]}"
+        try:
+            if format == "midi":
+                path = exporter.write_midi(single, target)
+            elif format == "musicxml":
+                path = exporter.write_musicxml(single, target)
+            else:
+                path, _ = exporter.write_pdf(single, target,
+                                             engine.settings.musescore())
+        except exporter.ExportError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        entry.exports[key] = path
+        return FileResponse(str(path), filename=path.name,
+                            media_type=_MEDIA[format])
 
     @app.delete("/v1/scores/{job_id}")
     def delete_score(job_id: str) -> dict:

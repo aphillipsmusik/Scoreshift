@@ -9,6 +9,13 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Key names contain arrows; a Windows console defaults to cp1252 and would
+# raise rather than print them.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -86,6 +93,10 @@ def main() -> int:
           win.score_summary.text()[:70])
     check("source key auto-selected", win.cmb_source_key.currentText() == "D major",
           win.cmb_source_key.currentText())
+    parts = win.job.info.parts if win.job.info else 0
+    check("per-part saving offered only when there is more than one part",
+          win.chk_parts.isEnabled() == (parts > 1),
+          f"{parts} part(s), checkbox {'on' if win.chk_parts.isEnabled() else 'off'}")
 
     win.cmb_target_key.setCurrentText("F major")
     win.apply_transpose()
@@ -105,6 +116,7 @@ def main() -> int:
     win.edit_basename.setText("UI test in F major")
     win.chk_xml.setChecked(True)
     win.chk_scanpdf.setChecked(True)
+    win.chk_parts.setChecked(True)
     # Suppress the modal completion dialog.
     from PySide6.QtWidgets import QMessageBox
     QMessageBox.exec = lambda self, *a, **k: None  # type: ignore[assignment]
@@ -112,6 +124,11 @@ def main() -> int:
     wait_idle(app, win, limit=240)
     produced = sorted(p.name for p in (OUT / "ui_export").glob("*"))
     check("export produced files from the UI", len(produced) >= 4, ", ".join(produced))
+    midis = [n for n in produced if n.endswith(".mid")]
+    pdfs = [n for n in produced if n.endswith(".pdf") and "scan" not in n]
+    check("the full score and every part came out as MIDI",
+          len(midis) == 1 + parts, ", ".join(midis))
+    check("and as PDF", len(pdfs) == 1 + parts, ", ".join(pdfs))
 
     win.close()
     print(f"\n{'ALL UI CHECKS PASSED' if not failures else 'FAILURES: ' + '; '.join(failures)}")

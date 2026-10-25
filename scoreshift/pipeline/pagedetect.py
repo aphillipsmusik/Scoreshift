@@ -228,10 +228,12 @@ def estimate_skew(img: np.ndarray, max_deg: float = 12.0) -> float:
     )
     if lines is None or len(lines) < 3:
         return 0.0
+    # OpenCV 4 hands back (N, 1, 4); OpenCV 5 hands back (N, 4).
+    segments = np.asarray(lines).reshape(-1, 4)
 
     angles = []
     weights = []
-    for x1, y1, x2, y2 in lines[:, 0]:
+    for x1, y1, x2, y2 in segments:
         dx, dy = float(x2 - x1), float(y2 - y1)
         if abs(dx) < 1:
             continue

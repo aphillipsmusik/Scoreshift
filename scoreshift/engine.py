@@ -84,6 +84,7 @@ class ExportRequest:
     midi: bool = True
     musicxml: bool = False
     scan_pdf: bool = False
+    parts: bool = False        # also one file per part, for PDF and/or MIDI
 
 
 @dataclass
@@ -260,6 +261,7 @@ class ScoreShiftEngine:
         return exporter.export_all(
             sc, Path(out_dir), safe_name(basename),
             want_pdf=req.pdf, want_midi=req.midi, want_musicxml=req.musicxml,
+            want_parts=req.parts,
             scan_images=[p.image for p in job.pages],
             want_scan_pdf=req.scan_pdf,
             musescore=self.settings.musescore(), log=log,

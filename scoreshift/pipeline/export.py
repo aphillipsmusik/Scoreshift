@@ -311,6 +311,136 @@ def write_pdf(sc: stream.Score, path: Path, musescore: Path | None = None,
 
 
 # ---------------------------------------------------------------------------
+# Individual parts
+# ---------------------------------------------------------------------------
+
+# Characters Windows will not accept in a file name, plus the ones that make
+# a name awkward to type on a command line.
+_BAD_FILENAME = set('<>:"/\\|?*') | {chr(c) for c in range(32)}
+
+
+def safe_filename(text: str, fallback: str = "Part") -> str:
+    """Turn a part name into something every filesystem will accept."""
+    cleaned = "".join(" " if ch in _BAD_FILENAME else ch for ch in text)
+    cleaned = " ".join(cleaned.split())          # collapse runs of whitespace
+    cleaned = cleaned.strip(" .")                # Windows drops these anyway
+    if len(cleaned) > 60:
+        cleaned = cleaned[:60].rstrip(" .")
+    return cleaned or fallback
+
+
+def _raw_part_name(part, index: int) -> str:
+    """The most human name a part can offer, best source first."""
+    for candidate in (getattr(part, "partName", None),
+                      getattr(part, "partAbbreviation", None)):
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+    try:
+        instruments = part.getElementsByClass("Instrument")
+        for inst in instruments:
+            for attr in ("partName", "instrumentName", "bestName"):
+                value = getattr(inst, attr, None)
+                if callable(value):
+                    value = value()
+                if value and str(value).strip() and str(value).strip() != "None":
+                    return str(value).strip()
+    except Exception:  # noqa: BLE001  - naming must never break an export
+        pass
+    return f"Part {index + 1}"
+
+
+def part_labels(sc: stream.Score) -> list[str]:
+    """One distinct, filename-safe label per part, in score order.
+
+    Audiveris names parts when the page does ("Violin I", "Piano"); when it
+    cannot, or when two parts carry the same name, the label falls back to or
+    is suffixed with the part's position, so no two files collide.
+    """
+    parts = list(sc.parts)
+    raw = [safe_filename(_raw_part_name(p, i), f"Part {i + 1}")
+           for i, p in enumerate(parts)]
+    counts: dict[str, int] = {}
+    for name in raw:
+        key = name.casefold()
+        counts[key] = counts.get(key, 0) + 1
+    seen: dict[str, int] = {}
+    labels: list[str] = []
+    for i, name in enumerate(raw):
+        key = name.casefold()
+        if counts[key] > 1:
+            seen[key] = seen.get(key, 0) + 1
+            labels.append(f"{name} {seen[key]}")
+        else:
+            labels.append(name)
+    return labels
+
+
+def score_for_part(sc: stream.Score, index: int, label: str = "") -> stream.Score:
+    """A one-part score, carrying the original's title and metadata.
+
+    A copy, so the caller can hand it to a writer without the full score
+    being touched.
+    """
+    import copy  # noqa: PLC0415
+
+    from music21 import metadata as m21metadata  # noqa: PLC0415
+
+    parts = list(sc.parts)
+    if not 0 <= index < len(parts):
+        raise ExportError(f"There is no part {index + 1} in this score.")
+    out = stream.Score()
+    source_md = getattr(sc, "metadata", None)
+    md = copy.deepcopy(source_md) if source_md is not None else m21metadata.Metadata()
+    if label:
+        # MuseScore and Verovio print this under the title, which is exactly
+        # where a player expects to see which part they are holding.
+        md.movementName = label
+    out.insert(0, md)
+    out.insert(0, copy.deepcopy(parts[index]))
+    return out
+
+
+def write_part_midis(sc: stream.Score, out_dir: Path, basename: str,
+                     log: LogFn | None = None) -> tuple[list[Path], list[str]]:
+    """One .mid per part. Returns (written, problems)."""
+    written: list[Path] = []
+    problems: list[str] = []
+    labels = part_labels(sc)
+    for i, label in enumerate(labels):
+        target = out_dir / f"{basename} - {label}.mid"
+        try:
+            write_midi(score_for_part(sc, i, label), target)
+        except ExportError as exc:
+            problems.append(f"MIDI for {label}: {exc}")
+            continue
+        written.append(target)
+        if log:
+            log(f"Wrote {target.name}")
+    return written, problems
+
+
+def write_part_pdfs(sc: stream.Score, out_dir: Path, basename: str,
+                    musescore: Path | None = None,
+                    log: LogFn | None = None) -> tuple[list[Path], list[str]]:
+    """One engraved .pdf per part. Returns (written, problems)."""
+    written: list[Path] = []
+    problems: list[str] = []
+    labels = part_labels(sc)
+    for i, label in enumerate(labels):
+        target = out_dir / f"{basename} - {label}.pdf"
+        try:
+            path, engraver = write_pdf(score_for_part(sc, i, label), target,
+                                       musescore, log)
+        except ExportError as exc:
+            problems.append(f"PDF for {label}: {exc}")
+            continue
+        written.append(path)
+        if log:
+            log(f"Wrote {path.name} (engraved by {engraver})")
+    return written, problems
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -321,6 +451,7 @@ def export_all(
     want_pdf: bool = True,
     want_midi: bool = True,
     want_musicxml: bool = False,
+    want_parts: bool = False,
     scan_images: Sequence | None = None,
     want_scan_pdf: bool = False,
     musescore: Path | None = None,
@@ -353,6 +484,31 @@ def export_all(
                 log(f"Wrote {p.name} (engraved by {engraver})")
         except ExportError as exc:
             report.skipped.append(f"PDF: {exc}")
+
+    if want_parts:
+        count = len(list(sc.parts))
+        if count < 2:
+            report.skipped.append(
+                "Individual parts: this score has only one part, so the files "
+                "would duplicate the full score."
+            )
+        else:
+            if log:
+                log(f"Saving {count} individual parts")
+            if want_midi:
+                files, problems = write_part_midis(sc, out_dir, basename, log)
+                report.written.extend(files)
+                report.skipped.extend(problems)
+            if want_pdf:
+                files, problems = write_part_pdfs(sc, out_dir, basename,
+                                                  musescore, log)
+                report.written.extend(files)
+                report.skipped.extend(problems)
+            if not want_midi and not want_pdf:
+                report.skipped.append(
+                    "Individual parts: tick PDF or MIDI to say what the part "
+                    "files should be."
+                )
 
     if want_scan_pdf and scan_images:
         try:

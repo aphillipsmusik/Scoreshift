@@ -70,7 +70,8 @@ you don't control.
 | `GET /v1/scores/{id}` | key, time signature, parts, bars, range |
 | `POST /v1/scores/{id}/transpose` | `{target_key}` or `{semitones}` or `{instrument}` |
 | `GET /v1/scores/{id}/preview?pages=4` | engraved SVG pages, for showing the result |
-| `GET /v1/scores/{id}/download?format=pdf\|midi\|musicxml` | the file |
+| `GET /v1/scores/{id}/parts` | the parts, in score order, with the `part` index to ask for |
+| `GET /v1/scores/{id}/download?format=pdf\|midi\|musicxml` | the file; add `&part=2` for one part on its own |
 | `DELETE /v1/scores/{id}` | forget it |
 
 ```bash

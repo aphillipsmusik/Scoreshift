@@ -511,8 +511,16 @@ class MainWindow(QMainWindow):
         card.add(self.chk_midi)
 
         more = Disclosure()
+        self.chk_parts = QCheckBox("Each part in its own file as well")
+        self.chk_parts.setToolTip(
+            "As well as the full score, save one file per part - whichever of "
+            "PDF and MIDI you have ticked above. Named after the parts on the "
+            "page, so \"Trumpet in Bb\" comes out as its own PDF a player can "
+            "read from.")
+        self.chk_parts.setEnabled(False)
         self.chk_xml = QCheckBox("MusicXML (to edit in MuseScore)")
         self.chk_scanpdf = QCheckBox("The cleaned scan as a PDF")
+        more.add(self.chk_parts)
         more.add(self.chk_xml)
         more.add(self.chk_scanpdf)
         self.edit_basename = QLineEdit()
@@ -1058,6 +1066,8 @@ class MainWindow(QMainWindow):
                          seconds: float | None = None) -> None:
         if info is None:
             self.score_summary.setText("Nothing read yet.")
+            self.chk_parts.setEnabled(False)
+            self.chk_parts.setChecked(False)
             return
         bits = []
         if info.notated_key:
@@ -1073,6 +1083,14 @@ class MainWindow(QMainWindow):
         bits.append(f"<span style='color:{theme.TEXT_DIM}'>"
                     + "  ·  ".join(facts) + "</span>")
         self.score_summary.setText("<br>".join(bits))
+        # Part files only mean something when there is more than one part.
+        self.chk_parts.setEnabled(info.parts > 1)
+        if info.parts > 1:
+            self.chk_parts.setText(f"Each of the {info.parts} parts in its own "
+                                   f"file as well")
+        else:
+            self.chk_parts.setChecked(False)
+            self.chk_parts.setText("Each part in its own file as well")
         for w in info.warnings:
             self.log("Note: " + w)
         if seconds:
@@ -1204,6 +1222,8 @@ class MainWindow(QMainWindow):
             pdf=self.chk_pdf.isChecked() and has_score,
             midi=self.chk_midi.isChecked() and has_score,
             musicxml=self.chk_xml.isChecked() and has_score,
+            parts=self.chk_parts.isChecked() and self.chk_parts.isEnabled()
+            and has_score,
             scan_pdf=want_scan,
         )
         job = self.job or ScoreJob(job_id="scan-only")

@@ -48,8 +48,16 @@ print("\n== Health ==")
 r = client.get("/v1/health")
 check("health responds", r.status_code == 200, str(r.status_code))
 body = r.json()
+# Whether Audiveris is installed depends on the machine; what matters is that
+# the API agrees with the engine about it and says why when it is missing.
+truth = engine.capabilities()["omr"]
 check("it reports the OMR engine honestly",
-      body["omr"]["available"] is False, body["omr"]["detail"][:50])
+      body["omr"]["available"] is truth["available"]
+      and bool(body["omr"]["detail"]),
+      f"available={body['omr']['available']}  {body['omr']['detail'][:40]}")
+check("status follows the engine",
+      body["status"] == ("ok" if truth["available"] else "degraded"),
+      body["status"])
 check("it names the engraver", "Verovio" in body["engraver"] or
       "MuseScore" in body["engraver"], body["engraver"])
 
@@ -127,6 +135,9 @@ check("it is really gone", r.status_code == 404)
 
 print("\n== The real engine refuses honestly without Audiveris ==")
 plain = ScoreShiftEngine(workspace=OUT / "service_work2")
+# Pretend the engine isn't installed, whatever this machine actually has, so
+# the refusal path is tested the same way everywhere.
+plain.settings.audiveris = lambda: None  # type: ignore[method-assign]
 plain_client = TestClient(create_app(plain))
 r = plain_client.post("/v1/scores", files=[
     ("files", ("photo_p1.jpg", (FIX / "photo_p1.jpg").read_bytes(), "image/jpeg"))])

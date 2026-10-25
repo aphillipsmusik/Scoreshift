@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.4 — 2026-10-25
+
+Individual parts, and a fix that would have broken new installs.
+
+- **Each part in its own file.** Tick *Each of the N parts in its own file as
+  well* under More options and, alongside the full score, ScoreShift saves one
+  PDF and one MIDI per part — named after the parts on the page, so a trumpet
+  player gets *Fanfare - Trumpet in Bb.pdf* to read from. The part's name is
+  printed under the title, and the full score is still saved as before.
+- Parts with no name on the page fall back to their instrument, then to their
+  position, and two parts with the same name are numbered, so no two files ever
+  collide. The option is only offered when a piece actually has more than one
+  part.
+- **The API serves parts too**, for the phone app later: `GET
+  /v1/scores/{id}/parts` lists them, and `?part=2` on the download hands back
+  that part alone as PDF, MIDI or MusicXML.
+- The window smoke test prints key names with arrows in them without tripping
+  over a Windows console's default encoding.
+- The test suite no longer assumes the machine running it has no note-reading
+  engine installed, so it passes on a machine with Audiveris as well as on a
+  bare build runner.
+- **Fixed:** staff-line deskew crashed on OpenCV 5, which pip now installs by
+  default — every page clean-up would have failed in a build made from today's
+  dependencies. It handles both OpenCV 4 and 5 now.
+
 ## 1.3 — 2026-09-12
 
 A redesigned window, and updates that arrive on their own.
