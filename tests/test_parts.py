@@ -201,7 +201,14 @@ if problems:
 
 # ---------------------------------------------------------------------------
 print("\n== The API ==")
-from fastapi.testclient import TestClient  # noqa: E402
+try:
+    from fastapi.testclient import TestClient
+except Exception as exc:  # noqa: BLE001 - no HTTP client for the test harness
+    print("\n  SKIPPED: the API tests need a test client "
+          "(pip install -r requirements-dev.txt)")
+    print(f"  ({exc})")
+    print(f"\n{passed} passed, {failed} failed")
+    sys.exit(1 if failed else 0)
 
 from scoreshift.service.app import create_app  # noqa: E402
 

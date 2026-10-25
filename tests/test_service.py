@@ -8,7 +8,12 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fastapi.testclient import TestClient  # noqa: E402
+try:
+    from fastapi.testclient import TestClient
+except Exception as _exc:  # noqa: BLE001
+    print("\n  SKIPPED: the API tests need a test client "
+          f"(pip install -r requirements-dev.txt)\n  ({_exc})")
+    raise SystemExit(0)
 
 from scoreshift.engine import ScoreShiftEngine  # noqa: E402
 from scoreshift.pipeline import score as scoring  # noqa: E402

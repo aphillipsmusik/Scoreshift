@@ -1,0 +1,7 @@
+# Test-only extras: nothing here ships in the app.
+#
+# Starlette's TestClient needs an HTTP client of its own. Starlette 1.x asks
+# for httpx2 (the Pydantic fork); 0.x asks for httpx. Installing both keeps
+# the API tests runnable whichever version pip resolves.
+httpx2>=2.0
+httpx>=0.27

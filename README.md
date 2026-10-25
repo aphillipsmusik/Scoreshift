@@ -57,7 +57,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.4.exe         the installer
+dist\ScoreShift-Setup-1.4.1.exe       the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -145,15 +145,15 @@ scoreshift/
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script
 .github/workflows/     tag a version, get an installer attached to the release
-tests/                 180 checks, none of which need a display or a camera
-                       (a couple depend on what is installed)
+tests/                 179 checks, none of which need a display or a camera
 ```
 
-Run the tests (from a source checkout):
+Run the tests (from a source checkout; the API tests also want
+`pip install -r requirements-dev.txt`):
 
 ```
 .venv\Scripts\python tests\make_fixture.py     # builds a synthetic photo
-.venv\Scripts\python tests\test_pipeline.py    # 42 checks
+.venv\Scripts\python tests\test_pipeline.py    # 41 checks
 .venv\Scripts\python tests\test_camera.py      # 24 checks
 .venv\Scripts\python tests\test_service.py     # 25 checks
 .venv\Scripts\python tests\test_updater.py   # 31 checks
@@ -164,7 +164,7 @@ Run the tests (from a source checkout):
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.4
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.4.1
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,
