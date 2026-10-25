@@ -57,7 +57,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.4.1.exe       the installer
+dist\ScoreShift-Setup-1.4.2.exe       the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -164,7 +164,7 @@ Run the tests (from a source checkout; the API tests also want
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.4.1
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.4.2
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,

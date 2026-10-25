@@ -23,8 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-server.txt \
-                      -r requirements-dev.txt pyinstaller
+          pip install -r requirements.txt -r requirements-server.txt -r requirements-dev.txt pyinstaller
 
       - name: Run the tests that need no display
         run: |

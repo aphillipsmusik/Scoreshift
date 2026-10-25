@@ -1,9 +1,9 @@
 # Changelog
 
-## 1.4.1 — 2026-10-25
+## 1.4.2 — 2026-10-25
 
-Individual parts, and a fix that would have broken new installs. (1.4 was
-tagged but never published: its build stopped on the test-dependency problem
+Individual parts, and a fix that would have broken new installs. (1.4 and 1.4.1 were
+tagged but never published: those builds stopped in CI, on the problems
 fixed below.)
 
 - **Each part in its own file.** Tick *Each of the N parts in its own file as
