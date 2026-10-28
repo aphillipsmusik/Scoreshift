@@ -13,9 +13,13 @@ printable PDF and a MIDI file.
      takes a shot whenever you want one.
    - **Scan** — straight from your printer (flatbed or document feeder, any DPI).
    - **Add images** — photos from your phone, or any image files.
-2. **Clean up.** Perspective corrected, staves straightened off the staff lines
-   themselves, lighting evened out so the paper is white and the ink is black.
-   The four corners are draggable if the automatic guess is off.
+2. **Clean up.** The page is found by its staff lines - the one thing on a
+   desk that nothing else looks like - so a sheet lying on a tray, a mat or a
+   laptop is still the thing that gets cropped. Perspective corrected, staves
+   straightened off those same lines, lighting evened out so the paper is
+   white and the ink is black. An open booklet, or two sheets side by side,
+   is **split into two pages** down the fold. The four corners are draggable
+   if the automatic guess is off.
 3. **Read the notes.** Audiveris, a free offline OMR engine, turns the cleaned
    pages into MusicXML.
 4. **Change the key.** A target key, a number of half steps, or an instrument
@@ -57,7 +61,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.4.2.exe       the installer
+dist\ScoreShift-Setup-1.5.exe         the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -79,6 +83,16 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1   # one-off
 
 ## Using it
 
+**How much detail you need.** Reading music is a matter of resolution: the
+note reader wants about 14 pixels between staff lines, and the camera window
+measures and reports exactly that - *Detail 18 px - good*, down to *too far to
+read*. A whole page across a 720p frame gives about 3 px and 1080p about 6; a
+flatbed scan at 300 DPI gives about 20, and a phone photo of a single page
+about 17. So the **scanner is the reliable route**, a phone photo is good, and
+a webcam wants one page filling the frame. ScoreShift enlarges fine staves for
+the reader, but it cannot invent detail the camera never caught, and it says
+so rather than pretending.
+
 **Camera.** Fill most of the frame with the page, keep the whole page in view,
 and hold still — the outline turns green and it fires. It won't shoot a blurry,
 dark or half-cut page, and it waits a couple of seconds before it will take
@@ -88,6 +102,12 @@ fix. Good light and a plain darker surface under the page help most.
 
 **Scanning.** 300 DPI grayscale is the sweet spot. Higher is slower without
 being more accurate.
+
+**Two pages at once.** Photograph an open booklet and ScoreShift saves two
+pages, left then right - the rail marks that row *2 pages*. Worth doing on the
+flatbed or with plenty of resolution: a spread shares the frame between two
+pages, so each gets half the detail. *More options -> Split two-page shots*
+turns it off.
 
 **Multi-page pieces.** Add every page in order (Move up / Move down to fix the
 order) before you transcribe — the pages are read as one continuous piece, so
@@ -131,7 +151,8 @@ scoreshift/
   engine.py            the whole pipeline, with no UI attached
   config.py            settings, and finding Audiveris / MuseScore
   pipeline/
-    pagedetect.py      page-edge detection, perspective, deskew, clean-up
+    pagedetect.py      page finding, perspective, deskew, spreads, clean-up
+    staves.py          staff lines: where the music is, how fine, how tilted
     camera.py          live page tracking and the auto-shutter rules
     scanner.py         Windows Image Acquisition (printers and scanners)
     omr.py             Audiveris batch runs, pages -> MusicXML
@@ -145,7 +166,7 @@ scoreshift/
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script
 .github/workflows/     tag a version, get an installer attached to the release
-tests/                 179 checks, none of which need a display or a camera
+tests/                 223 checks, none of which need a display or a camera
 ```
 
 Run the tests (from a source checkout; the API tests also want
@@ -158,13 +179,14 @@ Run the tests (from a source checkout; the API tests also want
 .venv\Scripts\python tests\test_service.py     # 25 checks
 .venv\Scripts\python tests\test_updater.py   # 31 checks
 .venv\Scripts\python tests\test_parts.py     # 58 checks
+.venv\Scripts\python tests\test_scanner.py   # 44 checks
 .venv\Scripts\python tests\test_ui.py          # window smoke test
 ```
 
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.4.2
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.5
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,

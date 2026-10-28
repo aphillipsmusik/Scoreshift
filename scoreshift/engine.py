@@ -50,10 +50,14 @@ class CleanOptions:
     deskew: bool = True
     enhance: bool = True
     binarize: bool = False
+    split_spreads: bool = True       # two pages in one shot become two pages
+    scale_to_read: bool = True       # enlarge fine staves for the note reader
 
     def as_kwargs(self) -> dict:
         return dict(auto_crop=self.auto_crop, deskew=self.deskew,
-                    do_enhance=self.enhance, binarize=self.binarize)
+                    do_enhance=self.enhance, binarize=self.binarize,
+                    split_spreads=self.split_spreads,
+                    scale_to_read=self.scale_to_read)
 
 
 @dataclass
@@ -63,6 +67,9 @@ class CleanedPage:
     detected: bool = False
     skew_deg: float = 0.0
     notes: list[str] = field(default_factory=list)
+    interline: float = 0.0           # staff spacing in the original picture
+    readable: bool = True            # were the staves big enough to read
+    side: str = ""                   # "left"/"right" if a spread was split
 
 
 @dataclass
@@ -153,16 +160,19 @@ class ScoreShiftEngine:
             if cancel():
                 raise EngineError("Cancelled.")
             quad = quads[i] if quads and i < len(quads) else None
-            result = pagedetect.process_page(src, quad=quad, **opts.as_kwargs())
+            results = pagedetect.process_capture(src, quad=quad, **opts.as_kwargs())
             name = Path(src).name if not isinstance(src, np.ndarray) else f"page {i + 1}"
-            for note in result.notes:
-                log(f"{name}: {note}")
-            out.append(CleanedPage(
-                image=result.image,
-                source=Path(src) if not isinstance(src, np.ndarray) else None,
-                detected=result.detected, skew_deg=result.skew_deg,
-                notes=result.notes,
-            ))
+            for result in results:
+                label = f"{name} ({result.side})" if result.side else name
+                for note in result.notes:
+                    log(f"{label}: {note}")
+                out.append(CleanedPage(
+                    image=result.image,
+                    source=Path(src) if not isinstance(src, np.ndarray) else None,
+                    detected=result.detected, skew_deg=result.skew_deg,
+                    notes=result.notes, interline=result.interline,
+                    readable=result.readable, side=result.side,
+                ))
         return out
 
     # -- 2. read ---------------------------------------------------------

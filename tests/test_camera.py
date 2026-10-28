@@ -75,7 +75,12 @@ def run(tracker: PageTracker, frames, pause: float = 0.05) -> list[FrameCheck]:
     return checks
 
 
-settings = TrackerSettings(hold_seconds=0.2, cooldown_seconds=0.6)
+# A whole page in a 720p frame has staff lines about 3 px apart, which is
+# genuinely too fine to read - true of any webcam, and the point of the
+# readability gate. These tests are about the shutter mechanics, so the gate
+# is switched off here and tested on its own at the end.
+settings = TrackerSettings(hold_seconds=0.2, cooldown_seconds=0.6,
+                           require_readable=False)
 
 print("\n== Nothing to see ==")
 tracker = PageTracker(settings)

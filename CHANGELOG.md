@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.5 — 2026-10-28
+
+The scanning half, rebuilt around the one thing on a page that nothing else
+looks like: staff lines.
+
+- **The page is found by its music.** The old detector hunted for the
+  biggest, straightest, brightest four-sided thing in the picture - which on
+  a real desk is the tray, the mat, the laptop or the whole frame, not the
+  sheet lying on it. It now finds the staff lines first, grows out from them
+  to the edge of the paper, and picks the tightest outline that still holds
+  all the music. The live camera view does the same, so the outline you see
+  is on the page.
+- **Two pages in one shot become two pages.** An open booklet or two sheets
+  side by side are split down the fold - which is found by looking for the
+  column no staff crosses - and come out in reading order, each straightened
+  on its own. *More options → Split two-page shots* turns it off.
+- **It tells you when the notes are too small to read.** Staff spacing is
+  measured in the camera's own pixels and reported live: *Detail 18 px -
+  good*, down to *too far to read*. Pages whose staves are fine but small are
+  enlarged and sharpened for the note reader; pages where the detail was
+  never captured say so instead of quietly producing a bad transcription.
+  The shutter holds when there is nothing readable in frame.
+- **The camera opens at its best resolution** rather than a fixed 1080p, and
+  the quality menu says which one it picked. Detail is the whole game for
+  reading music: a full page across a 720p frame gives staff lines about 3 px
+  apart, where the reader wants 14.
+- Straightening now uses the staves themselves rather than a general-purpose
+  edge estimate, which roughly halves the leftover tilt.
+- 44 new checks covering all of this, including a page photographed on a
+  large bright tray - the case that started it.
+
 ## 1.4.2 — 2026-10-25
 
 Individual parts, and a fix that would have broken new installs. (1.4 and 1.4.1 were

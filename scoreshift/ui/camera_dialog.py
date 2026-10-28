@@ -17,8 +17,9 @@ from ..pipeline import camera as cam
 from .crop_view import ndarray_to_qpixmap
 
 RESOLUTIONS = [
+    ("Best the camera offers", 0, 0),
     ("1280 x 720", 1280, 720),
-    ("1920 x 1080  (recommended)", 1920, 1080),
+    ("1920 x 1080", 1920, 1080),
     ("2560 x 1440", 2560, 1440),
     ("3840 x 2160", 3840, 2160),
     ("640 x 480", 640, 480),
@@ -39,6 +40,7 @@ COLOURS = {
 class CameraWorker(QThread):
     frame_ready = Signal(object, object)      # ndarray, FrameCheck
     captured = Signal(object)                 # ndarray (full resolution)
+    size_chosen = Signal(int, int)            # what the camera actually gave
     failed = Signal(str)
 
     def __init__(self, index: int, width: int, height: int, parent=None) -> None:
@@ -59,7 +61,11 @@ class CameraWorker(QThread):
 
     def run(self) -> None:  # noqa: D102
         try:
-            stream = cam.CameraStream(self.index, self.width, self.height)
+            stream = cam.CameraStream(self.index, self.width or 1920,
+                                      self.height or 1080)
+            if not self.width:
+                size = stream.best_size()
+                self.size_chosen.emit(int(size[0]), int(size[1]))
         except cam.CameraError as exc:
             self.failed.emit(str(exc))
             return
@@ -165,7 +171,7 @@ class CameraDialog(QDialog):
         self.cmb_res = QComboBox()
         for label, _, _ in RESOLUTIONS:
             self.cmb_res.addItem(label)
-        self.cmb_res.setCurrentIndex(1)
+        self.cmb_res.setCurrentIndex(0)
         self.chk_auto = QCheckBox("Shoot automatically when the page is steady")
         self.chk_auto.setChecked(True)
         self.chk_auto.toggled.connect(self._auto_toggled)
@@ -173,6 +179,9 @@ class CameraDialog(QDialog):
         top.addWidget(self.cmb_camera, 1)
         top.addWidget(QLabel("Quality:"))
         top.addWidget(self.cmb_res)
+        self.lbl_size = QLabel("")
+        self.lbl_size.setStyleSheet("color:#6b7280;")
+        top.addWidget(self.lbl_size)
         top.addWidget(self.chk_auto)
         root.addLayout(top)
 
@@ -187,6 +196,11 @@ class CameraDialog(QDialog):
         self.status.setFont(font)
         self.status.setMinimumHeight(34)
         root.addWidget(self.status)
+
+        self.lbl_detail = QLabel("")
+        self.lbl_detail.setAlignment(Qt.AlignCenter)
+        self.lbl_detail.setStyleSheet("color:#6b7280;")
+        root.addWidget(self.lbl_detail)
 
         self.strip = QListWidget()
         self.strip.setFlow(QListWidget.LeftToRight)
@@ -251,6 +265,7 @@ class CameraDialog(QDialog):
         self.worker.auto = self.chk_auto.isChecked()
         self.worker.frame_ready.connect(self.on_frame)
         self.worker.captured.connect(self.on_capture)
+        self.worker.size_chosen.connect(self.on_size_chosen)
         self.worker.failed.connect(self.on_failed)
         self.worker.start()
 
@@ -268,6 +283,9 @@ class CameraDialog(QDialog):
             self.status.setStyleSheet("color:#374151;")
 
     # -- signals ----------------------------------------------------------
+    def on_size_chosen(self, width: int, height: int) -> None:
+        self.lbl_size.setText(f"{width} x {height}")
+
     def on_frame(self, frame: np.ndarray, check) -> None:
         self.view.update_frame(frame, check)
         colour = {"searching": "#6b7280", "adjusting": "#b45309",
@@ -275,8 +293,24 @@ class CameraDialog(QDialog):
         text = check.message
         if not self.chk_auto.isChecked() and check.state in ("holding", "ready"):
             text = "Looks good - press Space to capture"
+        if check.pages_in_shot > 1 and check.state in ("holding", "ready"):
+            text += "  -  two pages, they will be saved separately"
         self.status.setText(text)
         self.status.setStyleSheet(f"color:{colour};")
+
+        # How fine the printing is, which is what decides whether the notes
+        # can be read at all. Nothing later can put back detail the camera
+        # never captured, so it is worth saying out loud, as it happens.
+        verdict = cam.PageTracker.detail_verdict(check.interline)
+        self.lbl_detail.setText(verdict)
+        if not verdict:
+            self.lbl_detail.setStyleSheet("color:#6b7280;")
+        elif check.readable:
+            self.lbl_detail.setStyleSheet("color:#15803d;")
+        elif check.interline >= 6:
+            self.lbl_detail.setStyleSheet("color:#b45309;")
+        else:
+            self.lbl_detail.setStyleSheet("color:#b91c1c;")
 
     def on_capture(self, frame: np.ndarray) -> None:
         path = cam.save_frame(frame, self._out_dir)

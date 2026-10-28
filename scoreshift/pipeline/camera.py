@@ -15,7 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import pagedetect
+from . import pagedetect, staves
 
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -81,6 +81,36 @@ class CameraStream:
         except Exception:  # noqa: BLE001
             pass
 
+    # Detail is everything for reading music, so the biggest frame the
+    # camera will give is usually the right one.
+    SIZES = ((3840, 2160), (2560, 1440), (1920, 1080), (1280, 720), (640, 480))
+
+    def best_size(self) -> tuple[int, int]:
+        """The largest frame size this camera actually delivers."""
+        current = self.size()
+        for width, height in self.SIZES:
+            got = self.request_size(width, height)
+            if got[0] >= width * 0.95 and got[1] >= height * 0.95:
+                return got
+        self.request_size(*current)
+        return current
+
+    def zoom_range(self) -> tuple[float, float] | None:
+        """What the camera's own zoom can do, if it has one."""
+        try:
+            value = self.capture.get(cv2.CAP_PROP_ZOOM)
+        except Exception:  # noqa: BLE001
+            return None
+        if value is None or value <= 0:
+            return None
+        return (float(value), float(value) * 4.0)
+
+    def set_zoom(self, value: float) -> bool:
+        try:
+            return bool(self.capture.set(cv2.CAP_PROP_ZOOM, float(value)))
+        except Exception:  # noqa: BLE001
+            return False
+
     def request_size(self, width: int, height: int) -> tuple[int, int]:
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -121,6 +151,9 @@ class FrameCheck:
     brightness: float = 0.0
     motion: float = 1.0                   # corner movement, 0 = perfectly still
     good: bool = False                    # everything is right for a shot
+    interline: float = 0.0                # px between staff lines, 0 = unknown
+    readable: bool = True                 # are the notes big enough to read
+    pages_in_shot: int = 1                # 2 when an open booklet is in frame
     hold_frames: int = 0                  # consecutive good frames so far
     countdown: float = 0.0                # seconds left before auto-capture
     message: str = "Point the camera at the page"
@@ -142,6 +175,9 @@ class TrackerSettings:
     max_motion: float = 0.012             # fraction of the frame diagonal
     hold_seconds: float = 0.7             # how long it must stay still
     cooldown_seconds: float = 2.0         # pause after a shot
+    require_readable: bool = True         # hold the shutter when it is hopeless
+    min_interline_to_shoot: float = 5.0   # px; below this there is no music to read
+    staff_check_every: float = 0.5        # seconds between staff measurements
 
 
 class PageTracker:
@@ -153,17 +189,95 @@ class PageTracker:
         self._good_since: float | None = None
         self._blocked_until: float = 0.0
         self._last_quad: np.ndarray | None = None
+        self._interline: float = 0.0
+        self._pages_in_shot: int = 1
+        self._staff_checked: float = 0.0
+        self._info: staves.StaffInfo | None = None
+        self._gutter_in: bool = False
 
     def reset(self) -> None:
         self._recent.clear()
         self._good_since = None
         self._last_quad = None
+        self._interline = 0.0
+        self._pages_in_shot = 1
+        self._staff_checked = 0.0
+        self._info = None
+        self._gutter_in = False
+
+    def _staff_info(self, frame: np.ndarray) -> staves.StaffInfo:
+        """Where the music is and how fine it is, refreshed now and then.
+
+        This is the measurement that finds the page on a cluttered desk and
+        says whether the notes are big enough to be worth a shot. Staff lines
+        only survive at full resolution, which is far too slow to repeat on
+        every frame, so it runs a few times a second - and once the music has
+        been found, only over the patch of frame it was found in, which costs
+        a fraction as much.
+        """
+        now = time.time()
+        have = self._info is not None and self._info.found
+        due = self.settings.staff_check_every if have else self.settings.staff_check_every * 3
+        if self._info is not None and now - self._staff_checked < due:
+            return self._info
+        self._staff_checked = now
+
+        info = None
+        if have and self._info.box:
+            x, y, w, h = self._info.box
+            pad_x, pad_y = int(0.25 * w), int(0.25 * h)
+            x0, y0 = max(0, x - pad_x), max(0, y - pad_y)
+            x1 = min(frame.shape[1], x + w + pad_x)
+            y1 = min(frame.shape[0], y + h + pad_y)
+            crop = frame[y0:y1, x0:x1]
+            if crop.size:
+                found = staves.analyse(crop)
+                if found.found and found.box:
+                    bx, by, bw, bh = found.box
+                    # The crop's own coordinates have to be carried back to
+                    # the frame, for the box and for every segment in it.
+                    step = 1.0 / found.scale if found.scale else 1.0
+                    shift = np.array([x0, y0, x0, y0], dtype=np.float32) * step
+                    info = staves.StaffInfo(
+                        lines=found.lines, interline=found.interline,
+                        angle=found.angle, box=(bx + x0, by + y0, bw, bh),
+                        scale=found.scale,
+                        segments=(found.segments + shift).astype(np.int32)
+                        if len(found.segments) else found.segments)
+                    self._gutter_in = (
+                        pagedetect.find_gutter(crop, found) is not None)
+        if info is None:
+            info = staves.analyse(frame)
+            self._gutter_in = False
+            if info.found and info.box:
+                x, y, w, h = info.box
+                crop = frame[max(0, y):y + h, max(0, x):x + w]
+                if crop.size:
+                    self._gutter_in = pagedetect.find_gutter(crop) is not None
+
+        self._info = info
+        self._interline = info.interline if info.found else 0.0
+        self._pages_in_shot = 2 if (info.found and self._gutter_in) else 1
+        return info
 
     def block(self, seconds: float | None = None) -> None:
         """Stop auto-capture briefly, e.g. straight after taking a shot."""
         wait = self.settings.cooldown_seconds if seconds is None else seconds
         self._blocked_until = time.time() + wait
         self._good_since = None
+
+    @staticmethod
+    def detail_verdict(interline: float) -> str:
+        """What the measured staff spacing means, in words."""
+        if interline <= 0:
+            return ""
+        if interline >= staves.MIN_GOOD_INTERLINE:
+            return f"Detail {interline:.0f} px - good"
+        if interline >= staves.MIN_OPTICAL_INTERLINE:
+            return f"Detail {interline:.0f} px - usable"
+        if interline >= 6:
+            return f"Detail {interline:.0f} px - rough, expect mistakes"
+        return f"Detail {interline:.0f} px - too far to read"
 
     @property
     def cooling_down(self) -> bool:
@@ -177,7 +291,13 @@ class PageTracker:
                  if scale < 1.0 else frame)
         sh, sw = small.shape[:2]
 
-        quad_small = pagedetect.detect_page(small, min_area_ratio=s.track_area_ratio)
+        # The staff lines are measured on the full frame - they vanish in a
+        # thumbnail - but the outline hunt runs on the shrunken copy, with
+        # those findings rescaled to fit it. Full-frame detection on every
+        # frame would cost more than the preview can afford.
+        info = self._staff_info(frame).at_scale(scale)
+        quad_small = pagedetect.detect_page(
+            small, min_area_ratio=s.track_area_ratio, info=info)
         result = FrameCheck()
 
         if quad_small is None:
@@ -198,6 +318,11 @@ class PageTracker:
         m = s.edge_margin
         result.cut_off = bool(xs.min() <= m or ys.min() <= m
                               or xs.max() >= sw - m or ys.max() >= sh - m)
+
+        result.interline = self._interline
+        result.pages_in_shot = self._pages_in_shot
+        result.readable = (self._interline <= 0
+                           or self._interline >= staves.MIN_OPTICAL_INTERLINE)
 
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
         mask = np.zeros((sh, sw), np.uint8)
@@ -229,6 +354,13 @@ class PageTracker:
             problem = "Too bright - the paper is blown out"
         elif result.sharpness < s.min_sharpness:
             problem = "Blurry - hold still while it focuses"
+        elif (s.require_readable and 0 < self._interline
+              < s.min_interline_to_shoot):
+            # The one thing that cannot be fixed afterwards: detail that was
+            # never in the picture at all.
+            problem = (f"Too far - the staff lines are only "
+                       f"{self._interline:.0f} px apart. Fill the frame with "
+                       "one page.")
         elif result.motion > s.max_motion:
             problem = "Hold still"
 
@@ -253,7 +385,8 @@ class PageTracker:
         result.hold_frames = len(self._recent)
         if result.countdown <= 0:
             result.state = "ready"
-            result.message = "Captured"
+            result.message = ("Captured - two pages"
+                              if result.pages_in_shot > 1 else "Captured")
         else:
             result.state = "holding"
             result.message = f"Hold still... {result.countdown:.1f}s"

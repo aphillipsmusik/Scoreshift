@@ -3,7 +3,7 @@
 ; (build.ps1 does this for you after PyInstaller has run.)
 
 #define AppName      "ScoreShift"
-#define AppVersion   "1.4.2"
+#define AppVersion   "1.5"
 #define AppPublisher "Austin Phillips"
 #define AppExe       "ScoreShift.exe"
 

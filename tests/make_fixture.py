@@ -92,12 +92,13 @@ def musicxml_to_png(xml_path: Path, png_path: Path) -> Path:
     return png_path
 
 
-def fake_photo(page_png: Path, out_path: Path, seed: int = 7) -> Path:
+def fake_photo(page_png: Path, out_path: Path, seed: int = 7,
+               target: int = 1500) -> Path:
     """Put the page on a desk, at an angle, under uneven light."""
     rng = np.random.default_rng(seed)
     page = cv2.imread(str(page_png), cv2.IMREAD_COLOR)
     ph, pw = page.shape[:2]
-    scale = 1500 / max(ph, pw)
+    scale = target / max(ph, pw)
     page = cv2.resize(page, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     ph, pw = page.shape[:2]
 
@@ -141,7 +142,86 @@ def fake_photo(page_png: Path, out_path: Path, seed: int = 7) -> Path:
         composite.astype(np.int16) + rng.normal(0, 3.5, composite.shape).astype(np.int16),
         0, 255).astype(np.uint8)
 
-    cv2.imwrite(str(out_path), composite)
+    cv2.imwrite(str(out_path), composite, [cv2.IMWRITE_JPEG_QUALITY, 86])
+    return out_path
+
+
+def spread_sheet(page_png: Path, out_path: Path) -> Path:
+    """Two pages side by side, the way an open booklet lies."""
+    page = cv2.imread(str(page_png), cv2.IMREAD_COLOR)
+    ph, pw = page.shape[:2]
+    gap = int(pw * 0.03)
+    sheet = np.full((ph, pw * 2 + gap, 3), 255, np.uint8)
+    sheet[:, :pw] = page
+    sheet[:, pw + gap:] = page
+    # Tell the two halves apart: one marker block on the left page, two on
+    # the right, so a test can prove the pages come out in reading order.
+    size = int(pw * 0.05)
+    cv2.rectangle(sheet, (int(pw * 0.08), int(ph * 0.90)),
+                  (int(pw * 0.08) + size, int(ph * 0.90) + size), (0, 0, 0), -1)
+    base = pw + gap + int(pw * 0.08)
+    for i in range(2):
+        x = base + i * int(size * 1.6)
+        cv2.rectangle(sheet, (x, int(ph * 0.90)),
+                      (x + size, int(ph * 0.90) + size), (0, 0, 0), -1)
+    # The fold: a soft dark band down the middle, as a real booklet shows.
+    fold = np.zeros((ph, pw * 2 + gap), np.float32)
+    fold[:, pw:pw + gap] = 1.0
+    fold = cv2.GaussianBlur(fold, (0, 0), gap * 0.6)
+    sheet = np.clip(sheet.astype(np.float32) * (1 - 0.45 * fold[..., None]),
+                    0, 255).astype(np.uint8)
+    # Big enough that each half still has readable staves, small enough that
+    # the repository does not carry megabytes of generated test picture.
+    width = 2600
+    if sheet.shape[1] > width:
+        f = width / sheet.shape[1]
+        sheet = cv2.resize(sheet, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    cv2.imwrite(str(out_path), sheet, [cv2.IMWRITE_PNG_COMPRESSION, 9])
+    return out_path
+
+
+def tray_photo(page_png: Path, out_path: Path, seed: int = 3) -> Path:
+    """A page on a big, bright, rectangular tray on a cluttered desk.
+
+    The case that breaks a page detector built on "find the biggest
+    four-sided bright thing": the tray is bigger, brighter and straighter
+    than the sheet lying on it.
+    """
+    rng = np.random.default_rng(seed)
+    page = cv2.imread(str(page_png), cv2.IMREAD_COLOR)
+    scale = 760 / max(page.shape[:2])
+    page = cv2.resize(page, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    ph, pw = page.shape[:2]
+
+    bg = np.full((1080, 1920, 3), (42, 46, 52), np.uint8)
+    bg = np.clip(bg.astype(np.int16)
+                 + rng.normal(0, 7, bg.shape).astype(np.int16), 0, 255).astype(np.uint8)
+    # Clutter: a few dark oblongs, as a desk has.
+    for _ in range(7):
+        x, y = int(rng.integers(0, 1700)), int(rng.integers(0, 900))
+        w, h = int(rng.integers(60, 260)), int(rng.integers(40, 180))
+        shade = int(rng.integers(20, 90))
+        cv2.rectangle(bg, (x, y), (x + w, y + h), (shade, shade, shade), -1)
+
+    # The tray: a large, bright, almost-white rectangle.
+    cv2.rectangle(bg, (240, 90), (1680, 1010), (196, 206, 214), -1)
+    cv2.rectangle(bg, (240, 90), (1680, 1010), (170, 180, 190), 6)
+
+    x0, y0 = 620, 190
+    patch = bg[y0:y0 + ph, x0:x0 + pw]
+    if patch.shape[:2] == (ph, pw):
+        shadow = np.zeros(bg.shape[:2], np.uint8)
+        cv2.rectangle(shadow, (x0 + 8, y0 + 10), (x0 + pw + 8, y0 + ph + 10), 255, -1)
+        shadow = cv2.GaussianBlur(shadow, (0, 0), 9)
+        bg = (bg.astype(np.float32)
+              * (1 - 0.3 * (shadow[..., None] / 255.0))).astype(np.uint8)
+        bg[y0:y0 + ph, x0:x0 + pw] = page
+
+    yy, xx = np.mgrid[0:1080, 0:1920].astype(np.float32)
+    light = 1.1 - 0.3 * ((xx / 1920) * 0.5 + (yy / 1080) * 0.6)
+    out = np.clip(bg.astype(np.float32) * light[..., None], 0, 255).astype(np.uint8)
+    out = cv2.GaussianBlur(out, (3, 3), 0.7)
+    cv2.imwrite(str(out_path), out)
     return out_path
 
 
@@ -155,6 +235,12 @@ def main() -> None:
     for i, seed in enumerate((7, 21), start=1):
         photo = fake_photo(png, OUT / f"photo_p{i}.jpg", seed=seed)
         print("wrote", photo)
+    spread = spread_sheet(png, OUT / "spread_flat.png")
+    print("wrote", spread)
+    # A spread holds two pages, so it needs twice the pixels to be as
+    # readable as a single-page photo - the same trade a real camera makes.
+    print("wrote", fake_photo(spread, OUT / "photo_spread.jpg", seed=5, target=2600))
+    print("wrote", tray_photo(png, OUT / "photo_on_tray.jpg"))
 
 
 if __name__ == "__main__":

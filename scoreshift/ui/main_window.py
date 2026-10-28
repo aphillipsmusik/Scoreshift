@@ -49,6 +49,17 @@ class PageItem:
     quad: np.ndarray | None = None
     processed: np.ndarray | None = None
     notes: list[str] = field(default_factory=list)
+    # One picture can hold two pages - an open booklet, or two sheets side by
+    # side - and then it cleans up into two.
+    parts: list[np.ndarray] = field(default_factory=list)
+    readable: bool = True
+    spread: bool = False             # holds two pages
+
+    @property
+    def page_count(self) -> int:
+        if self.parts:
+            return len(self.parts)
+        return 2 if self.spread else 1
 
     @property
     def name(self) -> str:
@@ -487,6 +498,13 @@ class MainWindow(QMainWindow):
             c.toggled.connect(self._invalidate_processed)
 
         more = Disclosure()
+        self.chk_split = QCheckBox("Split two-page shots")
+        self.chk_split.setChecked(True)
+        self.chk_split.setToolTip(
+            "An open booklet, or two sheets side by side, becomes two pages. "
+            "Turn this off to keep the picture whole.")
+        self.chk_split.toggled.connect(self._invalidate_processed)
+        more.add(self.chk_split)
         self.chk_binarize = QCheckBox("Hard black and white")
         self.chk_binarize.setToolTip("For faint pencil or very grey photocopies")
         self.chk_binarize.toggled.connect(self._invalidate_processed)
@@ -810,7 +828,13 @@ class MainWindow(QMainWindow):
                 quad = pagedetect.detect_page(img) if auto else None
                 log(f"{p.name}: "
                     f"{'page edges found' if quad is not None else 'no page edge found'}")
-                items.append(PageItem(source=p, original=img, quad=quad))
+                flat = pagedetect.warp_quad(img, quad) if quad is not None else img
+                spread = pagedetect.find_gutter(flat) is not None
+                if spread:
+                    log(f"{p.name}: two pages in this one - they will be "
+                        "saved separately.")
+                items.append(PageItem(source=p, original=img, quad=quad,
+                                      spread=spread))
             return items
 
         def done(items):
@@ -820,8 +844,14 @@ class MainWindow(QMainWindow):
             self.page_list.setCurrentRow(len(self.pages) - 1)
             self.view_switch.select(0)
             self._suggest_basename()
-            self.status_label.setText(
-                f"{len(self.pages)} page{'s' if len(self.pages) != 1 else ''} ready.")
+            total = sum(p.page_count for p in self.pages)
+            if total != len(self.pages):
+                self.status_label.setText(
+                    f"{len(self.pages)} picture{'s' if len(self.pages) != 1 else ''} "
+                    f"holding {total} pages, ready.")
+            else:
+                self.status_label.setText(
+                    f"{total} page{'s' if total != 1 else ''} ready.")
             self._refresh_guidance()
 
         self._run(work, done, f"Loading {len(paths)} image(s)...")
@@ -830,14 +860,23 @@ class MainWindow(QMainWindow):
         thumb = cv2.resize(item.original, (THUMB.width(), THUMB.height()),
                            interpolation=cv2.INTER_AREA)
         li = QListWidgetItem(QIcon(ndarray_to_qpixmap(thumb)),
-                             f"  {len(self.pages)}")
+                             self._row_text(len(self.pages) - 1, item))
         li.setToolTip(str(item.source))
         li.setSizeHint(QSize(RAIL_WIDTH - 30, THUMB.height() + 16))
         self.page_list.addItem(li)
 
+    def _row_text(self, index: int, item: PageItem) -> str:
+        label = f"  {index + 1}"
+        if item.page_count > 1:
+            label += "  ·  2 pages"
+        return label
+
     def _renumber(self) -> None:
         for i in range(self.page_list.count()):
-            self.page_list.item(i).setText(f"  {i + 1}")
+            if i < len(self.pages):
+                self.page_list.item(i).setText(self._row_text(i, self.pages[i]))
+            else:
+                self.page_list.item(i).setText(f"  {i + 1}")
 
     def capture_from_camera(self) -> None:
         from .camera_dialog import CameraDialog
@@ -994,16 +1033,21 @@ class MainWindow(QMainWindow):
             deskew=self.chk_deskew.isChecked(),
             enhance=self.chk_enhance.isChecked(),
             binarize=self.chk_binarize.isChecked(),
+            split_spreads=self.chk_split.isChecked(),
         )
 
     def _process_item(self, item: PageItem) -> pagedetect.PageResult:
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            result = pagedetect.process_page(
+            results = pagedetect.process_capture(
                 item.original, quad=item.quad, **self._clean_options().as_kwargs())
-            item.processed = result.image
-            item.notes = result.notes
-            return result
+            item.parts = [r.image for r in results]
+            item.processed = results[0].image
+            item.notes = results[0].notes
+            item.readable = all(r.readable for r in results)
+            item.spread = len(results) > 1
+            self._renumber()
+            return results[0]
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -1023,12 +1067,23 @@ class MainWindow(QMainWindow):
         engine = self.engine
 
         def work(log, cancelled, step):
-            step(f"Cleaning {len(pages)} page(s)...")
-            cleaned = engine.clean_pages(
-                [p.original for p in pages], options,
-                quads=[p.quad for p in pages], log=log, cancel=cancelled)
-            for page, result in zip(pages, cleaned):
-                page.processed = result.image
+            step(f"Cleaning {len(pages)} picture(s)...")
+            cleaned = []
+            for page in pages:
+                # One at a time, so a picture that turns out to hold two pages
+                # can be tied back to the row it came from.
+                parts = engine.clean_pages(
+                    [page.original], options, quads=[page.quad],
+                    log=log, cancel=cancelled)
+                page.parts = [part.image for part in parts]
+                page.processed = parts[0].image
+                page.readable = all(part.readable for part in parts)
+                cleaned.extend(parts)
+            if len(cleaned) > len(pages):
+                log(f"{len(pages)} picture(s) held {len(cleaned)} pages.")
+            if any(not part.readable for part in cleaned):
+                log("Some pages are too small in the frame to read reliably - "
+                    "fill the frame with one page at a time for the best result.")
             step("Reading the notes - this can take a minute...")
             return engine.transcribe(cleaned, log=log, cancel=cancelled)
 
