@@ -63,7 +63,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.6.exe         the installer
+dist\ScoreShift-Setup-1.7.exe         the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -160,7 +160,8 @@ scoreshift/
     omr.py             Audiveris batch runs, pages -> MusicXML
     score.py           key detection and transposition (music21)
     export.py          PDF / MIDI / MusicXML / scan-PDF writing
-  ui/                  Qt window: crop editor, capture pane, score preview
+  ui/                  Qt window: dashboard shell, crop editor, capture pane
+    dash.py            nav rail, headline figures, page cards, panels
     theme.py           the dark palette and the app stylesheet
     icons.py           line icons drawn at runtime, no image files
     widgets.py         the shared buttons, cards and the slide-over panel
@@ -188,7 +189,7 @@ Run the tests (from a source checkout; the API tests also want
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.6
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.7
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,

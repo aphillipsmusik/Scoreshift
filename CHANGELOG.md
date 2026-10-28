@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.7 — 2026-10-28
+
+The window rebuilt as a dashboard.
+
+- **What you have is on screen as figures**, not buried in a form: how many
+  pages, what key they are going to, and how much detail the worst of them
+  has, with a bar underneath showing how the pages divide up between good,
+  usable, rough and too far to read.
+- **Every page is a card** - its detail in pixels, a plain-words verdict, its
+  size and tilt, a thumbnail, and a note when one picture held two pages. The
+  card you pick is the page you are working on.
+- **A navigation rail** down the left - Pages, Capture, Score, Save,
+  Settings - replaces the toolbar, and the title tells you where you are.
+- **A summary panel** gathers what was read: key, time signature and bars,
+  parts, range, a bar per page showing which will read worst, and what is
+  about to be written when you save.
+- The controls panel gets out of the way by itself on a narrow window, and the
+  whole dashboard scrolls, so the working area always keeps a usable height.
+
 ## 1.6 — 2026-10-28
 
 Capturing happens in the window you are already looking at.

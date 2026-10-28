@@ -15,8 +15,8 @@ from PySide6.QtCore import QPointF, QSize, Qt, QThread, Signal
 from PySide6.QtGui import (QBrush, QColor, QIcon, QPainter, QPen, QPixmap,
                            QPolygonF)
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel,
-                               QListWidget, QListWidgetItem, QSpinBox,
-                               QStackedWidget, QVBoxLayout, QWidget)
+                               QListWidget, QListWidgetItem, QSizePolicy,
+                               QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
 
 from ..config import Settings, work_dir
 from ..pipeline import camera as cam
@@ -107,7 +107,7 @@ class CameraView(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(560, 360)
+        self.setMinimumSize(360, 240)
         self._pix: QPixmap | None = None
         self._quad: np.ndarray | None = None
         self._state = "searching"
@@ -254,7 +254,8 @@ class CapturePane(QWidget):
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
-        self.btn_shutter = button("Take a page  (Space)", "camera", "primary")
+        self.btn_shutter = button("Take page", "camera", "primary",
+                                  "Take a page now  (Space)")
         self.btn_shutter.clicked.connect(self.take_shot)
         self.btn_scan = button("Scan now", "scanner", "primary")
         self.btn_scan.clicked.connect(self._start_scan)
@@ -285,6 +286,11 @@ class CapturePane(QWidget):
         row.setSpacing(6)
         self.cmb_camera = QComboBox()
         self.cmb_res = QComboBox()
+        for combo in (self.cmb_camera, self.cmb_res):
+            # Let the row give way on a narrow window rather than forcing
+            # the whole dashboard wider than the screen.
+            combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            combo.setMinimumWidth(96)
         for text, _, _ in RESOLUTIONS:
             self.cmb_res.addItem(text)
         self.cmb_res.setCurrentIndex(0)
@@ -323,6 +329,10 @@ class CapturePane(QWidget):
         self.spin_pages.setValue(20)
         self.spin_pages.setPrefix("up to ")
         self.spin_pages.setSuffix(" pages")
+        for w in (self.cmb_scanner, self.cmb_paper, self.spin_dpi,
+                  self.cmb_colour, self.spin_pages):
+            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            w.setMinimumWidth(88)
         row.addStretch(1)
         row.addWidget(self.cmb_scanner, 2)
         row.addWidget(self.cmb_paper)

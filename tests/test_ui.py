@@ -93,7 +93,13 @@ def main() -> int:
 
     win._load_paths([FIX / "photo_p1.jpg", FIX / "photo_p2.jpg"])
     wait_idle(app, win)
-    check("two pages loaded", len(win.pages) == 2 and win.page_list.count() == 2)
+    check("two pages loaded", len(win.pages) == 2 and len(win.cards.cards) == 2)
+    check("each page has a card showing its detail",
+          all(c.headline.text() for c in win.cards.cards),
+          ", ".join(c.headline.text() for c in win.cards.cards))
+    check("the headline figures are filled in",
+          win.stat_pages.value.text() == "2" and bool(win.stat_detail.value.text()),
+          f"{win.stat_pages.value.text()} pages, detail {win.stat_detail.value.text()}")
     check("page edges auto-detected", all(p.quad is not None for p in win.pages))
     win.grab().save(str(OUT / "ui_pages.png"))
 

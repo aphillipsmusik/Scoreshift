@@ -11,9 +11,9 @@ from PySide6.QtGui import QColor, QFont, QPalette
 # Tokens
 # ---------------------------------------------------------------------------
 
-BG = "#14161A"            # window behind everything
-SURFACE = "#1B1E24"       # panels, rails
-ELEVATED = "#22262E"      # cards, inputs, hovered rows
+BG = "#0D0F13"            # window behind everything
+SURFACE = "#15171C"       # panels, rails
+ELEVATED = "#1C2027"      # cards, inputs, hovered rows
 OVERLAY = "#272C35"       # pressed states, the slide-over
 BORDER = "#2C313A"
 BORDER_STRONG = "#3A414C"
@@ -23,21 +23,26 @@ TEXT_DIM = "#9AA3B0"
 TEXT_FAINT = "#6B7480"
 ON_ACCENT = "#0E1116"
 
-ACCENT = "#6C8CFF"
-ACCENT_HOVER = "#839FFF"
-ACCENT_PRESS = "#5A7BF0"
-ACCENT_SOFT = "#232A3D"   # accent at low opacity over SURFACE
+ACCENT = "#9B8CFF"
+ACCENT_HOVER = "#AFA3FF"
+ACCENT_PRESS = "#8878F2"
+ACCENT_SOFT = "#262041"   # accent at low opacity over SURFACE
 
 SUCCESS = "#4ADE80"
 WARNING = "#FBBF24"
 DANGER = "#F87171"
 
 # Paper stays paper, even in a dark app - music has to read correctly.
+# One colour per quality band, and for the per-page bars.
+CHART = ("#9B8CFF", "#F5B544", "#35D0A5", "#4C9BF5", "#E8E04B")
+
 PAPER = "#FFFFFF"
 CANVAS = "#101216"
 
-RADIUS = 10
-RADIUS_SM = 7
+RADIUS = 14
+RADIUS_SM = 9
+RADIUS_LG = 22          # the big dashboard panels
+PANEL = "#15171C"
 SPACE = 8
 
 FONT_FAMILY = '"Segoe UI Variable Display", "Segoe UI", Inter, system-ui, sans-serif'

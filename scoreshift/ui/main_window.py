@@ -14,7 +14,8 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QIcon, QKeySequence
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDockWidget,
+from PySide6.QtWidgets import (QFrame,  # noqa: F401
+                               QApplication, QCheckBox, QComboBox, QDockWidget,
                                QFileDialog, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu,
                                QMessageBox, QPlainTextEdit, QProgressBar,
@@ -26,11 +27,14 @@ from ..config import IS_WINDOWS, Settings, work_dir
 from ..engine import (CleanOptions, ExportRequest, ScoreJob, ScoreShiftEngine,
                       TransposeRequest)
 from ..pipeline import export as exporter
+from ..pipeline import staves
 from ..pipeline import omr, pagedetect
 from ..pipeline import score as scoring
 from ..pipeline import scanner as scanning
 from . import icons, theme
 from .capture_pane import CapturePane
+from .dash import (CardRow, CircleButton, FactRow, NavRail, PageCard, Panel,
+                   QualityBar, Segment, StatCard, StatTile)
 from .crop_view import CropView, ndarray_to_qpixmap
 from .score_preview import ScorePreview
 from .settings_dialog import SettingsDialog
@@ -55,6 +59,8 @@ class PageItem:
     parts: list[np.ndarray] = field(default_factory=list)
     readable: bool = True
     spread: bool = False             # holds two pages
+    interline: float = 0.0           # staff spacing in this picture, px
+    skew: float = 0.0                # how far it was rotated to straighten
 
     @property
     def page_count(self) -> int:
@@ -73,13 +79,15 @@ class MainWindow(QMainWindow):
         self.settings = Settings.load()
         self.engine = ScoreShiftEngine(self.settings)
         self.pages: list[PageItem] = []
+        self._row = 0
         self.job: ScoreJob | None = None
         self._job: Job | None = None
         self._engine_ready = False
 
         self.setWindowTitle("ScoreShift")
         self.resize(1360, 900)
-        self.setMinimumSize(1020, 680)
+        self.setMinimumSize(1120, 720)
+        self._panel_auto_hidden = False
         self.setAcceptDrops(True)
         self._build()
         self._refresh_guidance()
@@ -97,14 +105,37 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        outer.addWidget(self._build_top_bar())
-
         body = QWidget()
         row = QHBoxLayout(body)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
-        row.addWidget(self._build_rail())
-        row.addWidget(self._build_canvas(), 1)
+        row.addWidget(self._build_nav())
+
+        middle = QWidget()
+        middle.setObjectName("Dashboard")
+        column = QVBoxLayout(middle)
+        column.setContentsMargins(20, 16, 20, 16)
+        column.setSpacing(14)
+        column.addLayout(self._build_title_row())
+        column.addWidget(self._build_headline())
+        column.addWidget(self._build_pages_panel())
+        column.addWidget(self._build_stage(), 1)
+        column.addWidget(self._build_summary())
+
+        # The sections stack and scroll, so the working area keeps a usable
+        # height however many of them are showing.
+        scroller = QScrollArea()
+        scroller.setWidgetResizable(True)
+        scroller.setFrameShape(QFrame.NoFrame)
+        scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroller.setWidget(middle)
+        # Scoped, or every button inside the dashboard inherits "transparent".
+        scroller.setObjectName("DashScroll")
+        scroller.setStyleSheet(
+            "#DashScroll, #DashScroll > QWidget > QWidget#Dashboard "
+            "{ background: transparent; }")
+        row.addWidget(scroller, 1)
+
         row.addWidget(self._build_panel())
         outer.addWidget(body, 1)
 
@@ -144,51 +175,107 @@ class MainWindow(QMainWindow):
                               lambda: self.check_updates(quiet=False))
 
     # -- top bar --------------------------------------------------------
-    def _build_top_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("TopBar")
-        bar.setFixedHeight(58)
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(16, 0, 12, 0)
-        row.setSpacing(6)
+    def _build_nav(self) -> QWidget:
+        self.nav = NavRail([
+            ("Pages", "page"),
+            ("Capture", "camera"),
+            ("Score", "score"),
+            ("Save", "save"),
+            ("Settings", "settings"),
+        ])
+        self.nav.changed.connect(self._switch_view)
+        # The old two-way Page/Score switch and the rail are one thing now.
+        self.view_switch = self.nav
 
-        mark = QLabel()
-        mark.setPixmap(icons.pixmap("score", 22, theme.ACCENT))
-        row.addWidget(mark)
-        title = label("ScoreShift", "Title")
-        title.setContentsMargins(4, 0, 14, 0)
-        row.addWidget(title)
+        self.engine_pill = QWidget()
+        pill = QHBoxLayout(self.engine_pill)
+        pill.setContentsMargins(10, 8, 10, 8)
+        pill.setSpacing(8)
+        self.engine_dot = StatusDot("idle")
+        self.engine_label = label("Checking the reader...", "Faint")
+        self.engine_label.setWordWrap(True)
+        pill.addWidget(self.engine_dot)
+        pill.addWidget(self.engine_label, 1)
+        self.engine_pill.setStyleSheet(
+            f"background:{theme.SURFACE}; border-radius:{theme.RADIUS}px;")
+        self.nav.add_footer(self.engine_pill)
+        return self.nav
 
-        for text, icon_name, slot, tip in (
-            ("Add", "add", self.add_images, "Add photos or image files  (Ctrl+O)"),
-            ("Camera", "camera", self.capture_from_camera,
-             "Capture pages with a webcam  (Ctrl+Shift+C)"),
-            ("Scan", "scanner", self.scan_pages,
-             "Scan from your printer  (Ctrl+Shift+S)"),
-        ):
-            row.addWidget(button(text, icon_name, "ghost", tip))
-
+    def _build_title_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        headings = QVBoxLayout()
+        headings.setSpacing(0)
+        self.title_label = QLabel("Pages")
+        self.title_label.setStyleSheet(
+            f"color:{theme.TEXT}; font-size:26px; font-weight:600;")
+        self.top_hint = label("", "Faint")
+        self.top_hint.setWordWrap(False)
+        headings.addWidget(self.title_label)
+        headings.addWidget(self.top_hint)
+        row.addLayout(headings)
         row.addStretch(1)
 
-        self.top_hint = label("", "Hint")
-        self.top_hint.setWordWrap(False)
-        self.top_hint.setContentsMargins(0, 0, 10, 0)
-        self.top_hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        row.addWidget(self.top_hint)
-
-        self.primary = button("Transcribe", "transcribe", "primary")
-        self.primary.clicked.connect(self._do_primary)
-        row.addWidget(self.primary)
-
-        self.btn_panel = icon_button("chevron-right", "Hide the side panel  (Ctrl+B)")
+        self.btn_add_round = CircleButton("add", "Add photos or image files  (Ctrl+O)")
+        self.btn_add_round.clicked.connect(self.add_images)
+        self.btn_camera_round = CircleButton("camera", "Capture with a camera")
+        self.btn_camera_round.clicked.connect(self.capture_from_camera)
+        self.btn_scan_round = CircleButton("scanner", "Scan from your printer")
+        self.btn_scan_round.clicked.connect(self.scan_pages)
+        self.btn_more = CircleButton("settings", "More")
+        self.btn_more.clicked.connect(self._show_menu)
+        for b in (self.btn_add_round, self.btn_camera_round,
+                  self.btn_scan_round, self.btn_more):
+            row.addWidget(b)
+        self.btn_panel = CircleButton("chevron-right", "Hide the controls  (Ctrl+B)")
         self.btn_panel.clicked.connect(self.toggle_panel)
         row.addWidget(self.btn_panel)
+        return row
 
-        more = icon_button("settings", "More")
-        more.clicked.connect(self._show_menu)
-        self.btn_more = more
-        row.addWidget(more)
-        return bar
+    def _build_headline(self) -> QWidget:
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(10)
+
+        figures = QHBoxLayout()
+        figures.setSpacing(28)
+        self.stat_pages = StatTile("Pages", "0")
+        self.stat_key = StatTile("Key", "-")
+        self.stat_detail = StatTile("Detail", "-")
+        for tile in (self.stat_pages, self.stat_key, self.stat_detail):
+            figures.addWidget(tile)
+        figures.addStretch(1)
+
+        self.primary = button("Add pages", "add", "primary")
+        self.primary.setMinimumHeight(40)
+        self.primary.clicked.connect(self._do_primary)
+        figures.addWidget(self.primary, 0, Qt.AlignVCenter)
+        col.addLayout(figures)
+
+        self.quality = QualityBar()
+        col.addWidget(self.quality)
+        return holder
+
+    def _build_pages_panel(self) -> QWidget:
+        self.pages_panel = Panel("Pages")
+        self.cards = CardRow()
+        self.cards.selected.connect(self._select_page)
+        self.pages_panel.add(self.cards)
+        self.pages_panel.setFixedHeight(PageCard.HEIGHT + 90)
+
+        tools = QHBoxLayout()
+        tools.setSpacing(4)
+        self.btn_up = icon_button("up", "Move this page earlier", 30)
+        self.btn_up.clicked.connect(lambda: self.move_page(-1))
+        self.btn_down = icon_button("down", "Move this page later", 30)
+        self.btn_down.clicked.connect(lambda: self.move_page(1))
+        self.btn_remove = icon_button("trash", "Remove this page", 30)
+        self.btn_remove.clicked.connect(self.remove_page)
+        for b in (self.btn_up, self.btn_down, self.btn_remove):
+            self.pages_panel.add_action(b)
+        self.pages_panel.hide()
+        return self.pages_panel
 
     def _show_menu(self) -> None:
         menu = QMenu(self)
@@ -208,57 +295,11 @@ class MainWindow(QMainWindow):
         menu.exec(self.btn_more.mapToGlobal(self.btn_more.rect().bottomLeft()))
 
     # -- page rail ------------------------------------------------------
-    def _build_rail(self) -> QWidget:
-        rail = QWidget()
-        rail.setObjectName("PageRail")
-        rail.setFixedWidth(RAIL_WIDTH)
-        col = QVBoxLayout(rail)
-        col.setContentsMargins(12, 14, 12, 12)
-        col.setSpacing(10)
-
-        self.rail_heading = SectionHeading("Pages")
-        col.addWidget(self.rail_heading)
-
-        self.page_list = QListWidget()
-        self.page_list.setIconSize(THUMB)
-        self.page_list.setSpacing(0)
-        self.page_list.setUniformItemSizes(False)
-        self.page_list.currentRowChanged.connect(lambda _: self._refresh_page_view())
-        col.addWidget(self.page_list, 1)
-
-        self.rail_empty = label("No pages yet.\nAdd, capture or scan one.", "Faint")
-        self.rail_empty.setAlignment(Qt.AlignCenter)
-        col.addWidget(self.rail_empty)
-
-        tools = QHBoxLayout()
-        tools.setSpacing(2)
-        self.btn_up = icon_button("up", "Move this page earlier", 30)
-        self.btn_up.clicked.connect(lambda: self.move_page(-1))
-        self.btn_down = icon_button("down", "Move this page later", 30)
-        self.btn_down.clicked.connect(lambda: self.move_page(1))
-        self.btn_remove = icon_button("trash", "Remove this page", 30)
-        self.btn_remove.clicked.connect(self.remove_page)
-        for b in (self.btn_up, self.btn_down, self.btn_remove):
-            tools.addWidget(b)
-        tools.addStretch(1)
-        col.addLayout(tools)
-        return rail
-
     # -- canvas ---------------------------------------------------------
-    def _build_canvas(self) -> QWidget:
-        canvas = QWidget()
-        canvas.setObjectName("Canvas")
-        col = QVBoxLayout(canvas)
-        col.setContentsMargins(16, 12, 16, 12)
-        col.setSpacing(10)
-
-        head = QHBoxLayout()
-        head.setSpacing(8)
-        self.view_switch = Segmented([("Page", "page"), ("Capture", "camera"),
-                                      ("Score", "score")])
-        self.view_switch.changed.connect(self._switch_view)
-        head.addWidget(self.view_switch)
-        head.addStretch(1)
+    def _build_stage(self) -> QWidget:
+        self.stage = Panel()
+        self.stage_title = self.stage.title
+        self.stage.set_title("")
 
         self.page_tools = QWidget()
         page_tools = QHBoxLayout(self.page_tools)
@@ -278,7 +319,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_detect, self.btn_full, self.btn_rotate,
                   self.chk_show_clean):
             page_tools.addWidget(w)
-        head.addWidget(self.page_tools)
+        self.stage.add_action(self.page_tools)
 
         self.score_tools = QWidget()
         score_tools = QHBoxLayout(self.score_tools)
@@ -292,9 +333,8 @@ class MainWindow(QMainWindow):
         score_tools.addWidget(self.preview_label)
         score_tools.addWidget(zout)
         score_tools.addWidget(zin)
-        head.addWidget(self.score_tools)
+        self.stage.add_action(self.score_tools)
         self.score_tools.hide()
-        col.addLayout(head)
 
         self.stack = QStackedWidget()
         self.crop_view = CropView()
@@ -306,16 +346,41 @@ class MainWindow(QMainWindow):
         self.capture.message.connect(self.log)
         self.preview = ScorePreview()
         self.empty_state = self._build_empty_state()
-        self.stack.addWidget(self.crop_view)       # index 0, with the rail
-        self.stack.addWidget(self.capture)         # index 1
-        self.stack.addWidget(self.preview)         # index 2
+        self.stack.addWidget(self.crop_view)       # 0
+        self.stack.addWidget(self.capture)         # 1
+        self.stack.addWidget(self.preview)         # 2
         self.stack.addWidget(self.empty_state)
         self.stack.setCurrentWidget(self.empty_state)
-        col.addWidget(self.stack, 1)
+        self.stack.setMinimumHeight(430)
+        self.stage.add(self.stack, 1)
 
         self.page_hint = label("", "Faint")
-        col.addWidget(self.page_hint)
-        return canvas
+        self.stage.add(self.page_hint)
+        return self.stage
+
+    def _build_summary(self) -> QWidget:
+        self.summary_panel = Panel("Summary")
+        row = QHBoxLayout()
+        row.setSpacing(14)
+
+        facts = QVBoxLayout()
+        facts.setSpacing(6)
+        self.fact_key = FactRow("Key")
+        self.fact_time = FactRow("Time and bars")
+        self.fact_parts = FactRow("Parts")
+        self.fact_range = FactRow("Range")
+        for f in (self.fact_key, self.fact_time, self.fact_parts, self.fact_range):
+            facts.addWidget(f)
+        facts.addStretch(1)
+        row.addLayout(facts, 3)
+
+        self.card_detail = StatCard("Detail per page")
+        self.card_output = StatCard("Ready to save")
+        row.addWidget(self.card_detail, 2)
+        row.addWidget(self.card_output, 2)
+        self.summary_panel.add_layout(row)
+        self.summary_panel.hide()
+        return self.summary_panel
 
     def _build_empty_state(self) -> QWidget:
         holder = QWidget()
@@ -358,6 +423,21 @@ class MainWindow(QMainWindow):
         return holder
 
     def _switch_view(self, index: int) -> None:
+        titles = ["Pages", "Capture", "Score", "Save", "Settings"]
+        self.title_label.setText(titles[index] if index < len(titles) else "")
+        if index == 3:                      # Save: the panel, not a view
+            if not self.panel.is_open:
+                self.panel.show_panel()
+            self.nav.select(self.view_switch.current if
+                            self.view_switch.current < 3 else 0, notify=False)
+            self.title_label.setText("Pages")
+            self.edit_basename.setFocus()
+            return
+        if index == 4:                      # Settings
+            self.open_settings()
+            self.nav.select(0, notify=False)
+            self.title_label.setText("Pages")
+            return
         if index != 1:
             # Leaving the capture view: let go of the camera rather than
             # holding it open behind another screen.
@@ -379,7 +459,7 @@ class MainWindow(QMainWindow):
 
     # -- slide-over panel ------------------------------------------------
     def _build_panel(self) -> QWidget:
-        self.panel = SlideOver("Score")
+        self.panel = SlideOver("Controls")
         self.panel.closed.connect(self._refresh_guidance)
 
         scroll = QScrollArea()
@@ -680,10 +760,13 @@ class MainWindow(QMainWindow):
         for b in (self.btn_up, self.btn_down, self.btn_remove, self.btn_detect,
                   self.btn_full, self.btn_rotate, self.chk_show_clean):
             b.setEnabled(has_pages)
-        self.rail_empty.setVisible(not has_pages)
         self.page_tools.setVisible(has_pages and self.view_switch.current == 0)
-        self.rail_heading.caption.setText(
-            f"PAGES  ·  {len(self.pages)}" if has_pages else "PAGES")
+        self.pages_panel.setVisible(has_pages)
+        self.pages_panel.set_title(
+            f"Pages  ·  {sum(p.page_count for p in self.pages)}" if has_pages
+            else "Pages")
+        self._refresh_headline()
+        self._refresh_summary()
 
         has_score = self.job is not None and self.job.source_score is not None
         self.btn_transpose.setEnabled(has_score)
@@ -707,6 +790,7 @@ class MainWindow(QMainWindow):
             self.export()
 
     def toggle_panel(self) -> None:
+        self._panel_auto_hidden = False
         self.panel.toggle()
         self.btn_panel.setIcon(icons.icon(
             "chevron-right" if self.panel.is_open else "chevron-left",
@@ -843,7 +927,10 @@ class MainWindow(QMainWindow):
                     f = MAX_LOAD_DIM / max(h, w)
                     img = cv2.resize(img, None, fx=f, fy=f,
                                      interpolation=cv2.INTER_AREA)
-                quad = pagedetect.detect_page(img) if auto else None
+                # One staff analysis serves the outline, the spread check
+                # and the detail figure on the page's card.
+                info = staves.analyse(img)
+                quad = pagedetect.detect_page(img, info=info) if auto else None
                 log(f"{p.name}: "
                     f"{'page edges found' if quad is not None else 'no page edge found'}")
                 flat = pagedetect.warp_quad(img, quad) if quad is not None else img
@@ -852,15 +939,15 @@ class MainWindow(QMainWindow):
                     log(f"{p.name}: two pages in this one - they will be "
                         "saved separately.")
                 items.append(PageItem(source=p, original=img, quad=quad,
-                                      spread=spread))
+                                      spread=spread, interline=info.interline))
             return items
 
         def done(items):
-            for item in items:
-                self.pages.append(item)
-                self._append_list_item(item)
-            self.page_list.setCurrentRow(len(self.pages) - 1)
+            self.pages.extend(items)
+            self._row = len(self.pages) - 1
+            self._rebuild_cards()
             self.view_switch.select(0)
+            self._switch_view(0)
             self._suggest_basename()
             total = sum(p.page_count for p in self.pages)
             if total != len(self.pages):
@@ -874,27 +961,129 @@ class MainWindow(QMainWindow):
 
         self._run(work, done, f"Loading {len(paths)} image(s)...")
 
-    def _append_list_item(self, item: PageItem) -> None:
-        thumb = cv2.resize(item.original, (THUMB.width(), THUMB.height()),
-                           interpolation=cv2.INTER_AREA)
-        li = QListWidgetItem(QIcon(ndarray_to_qpixmap(thumb)),
-                             self._row_text(len(self.pages) - 1, item))
-        li.setToolTip(str(item.source))
-        li.setSizeHint(QSize(RAIL_WIDTH - 30, THUMB.height() + 16))
-        self.page_list.addItem(li)
-
-    def _row_text(self, index: int, item: PageItem) -> str:
-        label = f"  {index + 1}"
-        if item.page_count > 1:
-            label += "  ·  2 pages"
-        return label
-
-    def _renumber(self) -> None:
-        for i in range(self.page_list.count()):
-            if i < len(self.pages):
-                self.page_list.item(i).setText(self._row_text(i, self.pages[i]))
+    def _rebuild_cards(self) -> None:
+        """Redraw the page cards from the pages themselves."""
+        self.cards.clear()
+        for index, item in enumerate(self.pages):
+            card = self.cards.add_card()
+            interline = item.interline
+            if interline <= 0:
+                detail, delta, tone = "-", "not measured yet", theme.TEXT_DIM
+            elif interline >= staves.MIN_GOOD_INTERLINE:
+                detail, delta, tone = f"{interline:.0f} px", "good detail", theme.SUCCESS
+            elif interline >= staves.MIN_OPTICAL_INTERLINE:
+                detail, delta, tone = f"{interline:.0f} px", "usable", theme.SUCCESS
+            elif interline >= 6:
+                detail, delta, tone = (f"{interline:.0f} px",
+                                       "rough - expect mistakes", theme.WARNING)
             else:
-                self.page_list.item(i).setText(f"  {i + 1}")
+                detail, delta, tone = (f"{interline:.0f} px",
+                                       "too small to read", theme.DANGER)
+            h, w = item.original.shape[:2]
+            thumb = cv2.resize(item.original, (THUMB.width(), THUMB.height()),
+                               interpolation=cv2.INTER_AREA)
+            subtitle = (f"{item.page_count} pages in one" if item.page_count > 1
+                        else item.name[:18])
+            card.set_page(
+                title=f"Page {index + 1}", subtitle=subtitle, detail=detail,
+                delta=delta, delta_tone=tone, size=f"{w} x {h}",
+                tilt=f"{item.skew:+.1f}" if item.skew else "level",
+                thumb=ndarray_to_qpixmap(thumb))
+        self._row = max(0, min(self._row, len(self.pages) - 1))
+        self.cards.set_selected(self._row)
+        self.pages_panel.setVisible(bool(self.pages))
+        self._refresh_headline()
+
+    def _select_page(self, index: int) -> None:
+        self._row = index
+        self.cards.set_selected(index)
+        self.nav.select(0)
+        self._switch_view(0)
+        self._refresh_page_view()
+
+    def _refresh_headline(self) -> None:
+        """The three figures and the quality bar along the top."""
+        total = sum(p.page_count for p in self.pages)
+        self.stat_pages.set(str(total),
+                            f"from {len(self.pages)} picture"
+                            f"{'s' if len(self.pages) != 1 else ''}"
+                            if total != len(self.pages) else "")
+
+        if self.job is not None and self.job.transpose is not None:
+            move = self.job.transpose
+            self.stat_key.set(move.to_key or "-", f"was {move.from_key}")
+        elif self.job is not None and self.job.info is not None:
+            self.stat_key.set(self.job.info.best_key or "-", "not changed yet")
+        else:
+            self.stat_key.set("-", "nothing read yet")
+
+        measured = [p.interline for p in self.pages if p.interline > 0]
+        if measured:
+            worst = min(measured)
+            tone = (theme.SUCCESS if worst >= staves.MIN_OPTICAL_INTERLINE
+                    else theme.WARNING if worst >= 6 else theme.DANGER)
+            self.stat_detail.set(f"{worst:.0f} px",
+                                 "between staff lines, at worst", tone)
+        else:
+            self.stat_detail.set("-", "measured when pages come in")
+
+        bands = [
+            ("Good", theme.SUCCESS, staves.MIN_GOOD_INTERLINE, 1e9),
+            ("Usable", theme.CHART[2], staves.MIN_OPTICAL_INTERLINE,
+             staves.MIN_GOOD_INTERLINE),
+            ("Rough", theme.WARNING, 6.0, staves.MIN_OPTICAL_INTERLINE),
+            ("Too far", theme.DANGER, 0.0, 6.0),
+        ]
+        segments = []
+        for name, colour, low, high in bands:
+            count = sum(1 for value in measured if low <= value < high)
+            if count:
+                segments.append(Segment(
+                    name, float(count), colour,
+                    f"{count} page{'s' if count != 1 else ''}"))
+        waiting = len(self.pages) - len(measured)
+        if waiting > 0:
+            segments.append(Segment("Not measured", float(waiting),
+                                    theme.BORDER_STRONG, f"{waiting} waiting"))
+        self.quality.set_segments(segments)
+
+    def _refresh_summary(self) -> None:
+        info = self.job.info if self.job is not None else None
+        if info is None:
+            self.summary_panel.hide()
+            return
+        self.summary_panel.show()
+        move = self.job.transpose if self.job is not None else None
+        self.fact_key.set(f"{move.from_key} to {move.to_key}" if move
+                          else (info.best_key or "-"))
+        self.fact_time.set(f"{info.time_signature or '-'}  ·  {info.measures} bars")
+        self.fact_parts.set(f"{info.parts} part{'s' if info.parts != 1 else ''}")
+        self.fact_range.set(f"{info.lowest}-{info.highest}"
+                            if info.lowest else "-")
+
+        measured = [p.interline for p in self.pages if p.interline > 0]
+        if measured:
+            colours = []
+            for value in measured:
+                colours.append(
+                    theme.SUCCESS if value >= staves.MIN_OPTICAL_INTERLINE
+                    else theme.WARNING if value >= 6 else theme.DANGER)
+            self.card_detail.chart.set_values(measured, colours)
+            self.card_detail.set(f"{min(measured):.0f} px",
+                                 "the page that will read worst")
+        else:
+            self.card_detail.set("-", "")
+
+        wanted = [name for name, box in (
+            ("PDF", self.chk_pdf), ("MIDI", self.chk_midi),
+            ("MusicXML", self.chk_xml), ("Scan PDF", self.chk_scanpdf))
+            if box.isChecked()]
+        parts = info.parts if self.chk_parts.isChecked() else 0
+        files = len(wanted) + (parts * 2 if parts > 1 else 0)
+        self.card_output.set(f"{files} file{'s' if files != 1 else ''}",
+                             ", ".join(wanted) or "nothing ticked")
+        self.card_output.chart.set_values(
+            [1.0] * max(1, files), [theme.ACCENT] * max(1, files))
 
     def capture_from_camera(self) -> None:
         self.view_switch.select(1)
@@ -955,28 +1144,25 @@ class MainWindow(QMainWindow):
         self._run(work, done, "Scanning...")
 
     def remove_page(self) -> None:
-        row = self.page_list.currentRow()
-        if row < 0:
+        if not 0 <= self._row < len(self.pages):
             return
-        self.pages.pop(row)
-        self.page_list.takeItem(row)
-        self._renumber()
+        self.pages.pop(self._row)
+        self._row = min(self._row, len(self.pages) - 1)
+        self._rebuild_cards()
+        self._refresh_page_view()
         self._refresh_guidance()
 
     def move_page(self, delta: int) -> None:
-        row = self.page_list.currentRow()
-        new = row + delta
+        row, new = self._row, self._row + delta
         if row < 0 or not (0 <= new < len(self.pages)):
             return
         self.pages[row], self.pages[new] = self.pages[new], self.pages[row]
-        item = self.page_list.takeItem(row)
-        self.page_list.insertItem(new, item)
-        self.page_list.setCurrentRow(new)
-        self._renumber()
+        self._row = new
+        self._rebuild_cards()
 
     def _current_page(self) -> PageItem | None:
-        row = self.page_list.currentRow()
-        return self.pages[row] if 0 <= row < len(self.pages) else None
+        return (self.pages[self._row]
+                if 0 <= self._row < len(self.pages) else None)
 
     def _refresh_page_view(self) -> None:
         if self.view_switch.current != 0:
@@ -1042,10 +1228,8 @@ class MainWindow(QMainWindow):
         item.original = cv2.rotate(item.original, cv2.ROTATE_90_CLOCKWISE)
         item.quad = None
         item.processed = None
-        row = self.page_list.currentRow()
-        thumb = cv2.resize(item.original, (THUMB.width(), THUMB.height()),
-                           interpolation=cv2.INTER_AREA)
-        self.page_list.item(row).setIcon(QIcon(ndarray_to_qpixmap(thumb)))
+        item.interline = 0.0
+        self._rebuild_cards()
         self._refresh_page_view()
 
     def _clean_options(self) -> CleanOptions:
@@ -1067,7 +1251,9 @@ class MainWindow(QMainWindow):
             item.notes = results[0].notes
             item.readable = all(r.readable for r in results)
             item.spread = len(results) > 1
-            self._renumber()
+            item.interline = results[0].interline
+            item.skew = results[0].skew_deg
+            self._rebuild_cards()
             return results[0]
         finally:
             QApplication.restoreOverrideCursor()
@@ -1449,6 +1635,20 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
             self.log(f"Dropped {len(paths)} file(s).")
             self._load_paths(paths)
+
+    def resizeEvent(self, event):  # noqa: D102, N802
+        super().resizeEvent(event)
+        # The dashboard needs room: on a narrow window the controls get out
+        # of the way by themselves, and come back when there is space again.
+        narrow = self.width() < 1300
+        if narrow and self.panel.is_open:
+            self.panel.hide_panel()
+            self._panel_auto_hidden = True
+            self.btn_panel.setIcon(icons.icon("chevron-left", 17, theme.TEXT_DIM))
+        elif not narrow and self._panel_auto_hidden:
+            self.panel.show_panel()
+            self._panel_auto_hidden = False
+            self.btn_panel.setIcon(icons.icon("chevron-right", 17, theme.TEXT_DIM))
 
     def closeEvent(self, event):  # noqa: D102, N802
         self.capture.stop()
