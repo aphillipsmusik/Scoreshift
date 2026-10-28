@@ -7,10 +7,12 @@ printable PDF and a MIDI file.
 
 ## What it does
 
-1. **Get the pages in**, three ways:
-   - **Camera** — hold a page in front of a webcam. It outlines the page live and
-     shoots by itself once the page is steady, sharp and well framed. Space bar
-     takes a shot whenever you want one.
+1. **Get the pages in**, three ways — all inside the main window, under
+   **Capture**:
+   - **Camera** — hold a page in front of a webcam. The outline follows the
+     page as you move it, everything outside it dims, and it shoots by itself
+     once the page is steady, sharp and well framed. Space bar takes a shot
+     whenever you want one.
    - **Scan** — straight from your printer (flatbed or document feeder, any DPI).
    - **Add images** — photos from your phone, or any image files.
 2. **Clean up.** The page is found by its staff lines - the one thing on a
@@ -61,7 +63,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.5.exe         the installer
+dist\ScoreShift-Setup-1.6.exe         the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -158,7 +160,7 @@ scoreshift/
     omr.py             Audiveris batch runs, pages -> MusicXML
     score.py           key detection and transposition (music21)
     export.py          PDF / MIDI / MusicXML / scan-PDF writing
-  ui/                  Qt window, crop editor, camera view, score preview
+  ui/                  Qt window: crop editor, capture pane, score preview
     theme.py           the dark palette and the app stylesheet
     icons.py           line icons drawn at runtime, no image files
     widgets.py         the shared buttons, cards and the slide-over panel
@@ -166,7 +168,7 @@ scoreshift/
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script
 .github/workflows/     tag a version, get an installer attached to the release
-tests/                 223 checks, none of which need a display or a camera
+tests/                 229 checks, none of which need a display or a camera
 ```
 
 Run the tests (from a source checkout; the API tests also want
@@ -175,7 +177,7 @@ Run the tests (from a source checkout; the API tests also want
 ```
 .venv\Scripts\python tests\make_fixture.py     # builds a synthetic photo
 .venv\Scripts\python tests\test_pipeline.py    # 41 checks
-.venv\Scripts\python tests\test_camera.py      # 24 checks
+.venv\Scripts\python tests\test_camera.py      # 29 checks
 .venv\Scripts\python tests\test_service.py     # 25 checks
 .venv\Scripts\python tests\test_updater.py   # 31 checks
 .venv\Scripts\python tests\test_parts.py     # 58 checks
@@ -186,7 +188,7 @@ Run the tests (from a source checkout; the API tests also want
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.5
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.6
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,

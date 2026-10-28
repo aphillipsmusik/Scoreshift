@@ -176,6 +176,7 @@ class TrackerSettings:
     hold_seconds: float = 0.7             # how long it must stay still
     cooldown_seconds: float = 2.0         # pause after a shot
     require_readable: bool = True         # hold the shutter when it is hopeless
+    hold_outline: float = 0.3             # seconds to keep a lost outline on screen
     min_interline_to_shoot: float = 5.0   # px; below this there is no music to read
     staff_check_every: float = 0.5        # seconds between staff measurements
 
@@ -194,6 +195,9 @@ class PageTracker:
         self._staff_checked: float = 0.0
         self._info: staves.StaffInfo | None = None
         self._gutter_in: bool = False
+        self._smooth: np.ndarray | None = None
+        self._held_quad: np.ndarray | None = None
+        self._held_at: float = 0.0
 
     def reset(self) -> None:
         self._recent.clear()
@@ -204,6 +208,9 @@ class PageTracker:
         self._staff_checked = 0.0
         self._info = None
         self._gutter_in = False
+        self._smooth = None
+        self._held_quad = None
+        self._held_at = 0.0
 
     def _staff_info(self, frame: np.ndarray) -> staves.StaffInfo:
         """Where the music is and how fine it is, refreshed now and then.
@@ -260,6 +267,36 @@ class PageTracker:
         self._pages_in_shot = 2 if (info.found and self._gutter_in) else 1
         return info
 
+    def _follow(self, quad: np.ndarray | None, diagonal: float
+                ) -> np.ndarray | None:
+        """Keep the outline moving with the page rather than flickering.
+
+        Detection is run from scratch on every frame, so its corners jitter by
+        a pixel or two even on a page lying perfectly still, and it misses
+        outright on the odd frame. Blending each new answer into the last - and
+        holding the previous outline for a moment when a frame finds nothing -
+        is the difference between an outline that tracks the page and one that
+        twitches.
+        """
+        now = time.time()
+        if quad is None:
+            # A brief gap: keep showing where the page was.
+            if (self._held_quad is not None
+                    and now - self._held_at < self.settings.hold_outline):
+                return self._held_quad
+            self._smooth = None
+            return None
+
+        quad = pagedetect.order_quad(quad)
+        if self._smooth is not None:
+            moved = float(np.abs(quad - self._smooth).max())
+            if moved < 0.12 * diagonal:
+                quad = 0.45 * quad + 0.55 * self._smooth
+        self._smooth = quad.astype(np.float32)
+        self._held_quad = self._smooth
+        self._held_at = now
+        return self._smooth
+
     def block(self, seconds: float | None = None) -> None:
         """Stop auto-capture briefly, e.g. straight after taking a shot."""
         wait = self.settings.cooldown_seconds if seconds is None else seconds
@@ -298,6 +335,7 @@ class PageTracker:
         info = self._staff_info(frame).at_scale(scale)
         quad_small = pagedetect.detect_page(
             small, min_area_ratio=s.track_area_ratio, info=info)
+        quad_small = self._follow(quad_small, float(np.hypot(sw, sh)))
         result = FrameCheck()
 
         if quad_small is None:
@@ -340,6 +378,11 @@ class PageTracker:
         if self._recent:
             prev = self._recent[-1]
             result.motion = float(np.abs(quad_small - prev).max() / diag)
+            if result.motion > 3 * s.max_motion:
+                # The page is being moved: the music has gone somewhere else,
+                # so measure it again on the next frame rather than tracking
+                # with an answer from where it used to be.
+                self._staff_checked = 0.0
         self._recent.append(quad_small)
 
         # Say the single most useful thing.

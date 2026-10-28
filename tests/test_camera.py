@@ -170,50 +170,81 @@ if result.quad is not None:
           1.15 < h / w < 1.65 and float((page.image > 225).mean()) > 0.55,
           f"{w}x{h}, {float((page.image > 225).mean()):.0%} white")
 
-print("\n== The capture window ==")
+print("\n== The capture pane, inside the window ==")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from scoreshift.ui import camera_dialog as cd  # noqa: E402
+from scoreshift.config import Settings  # noqa: E402
+from scoreshift.ui import capture_pane as cp  # noqa: E402
 
 app = QApplication.instance() or QApplication(sys.argv)
-cd.cam.list_cameras = lambda *a, **k: [cd.cam.CameraInfo(0, "Synthetic test camera")]
+cp.cam.list_cameras = lambda *a, **k: [cp.cam.CameraInfo(0, "Synthetic test camera")]
 
 
-class OfflineWorker(cd.CameraWorker):
+class OfflineWorker(cp.CameraWorker):
     """Never touches real hardware; frames are pushed in by the test."""
 
     def run(self) -> None:
         return
 
 
-cd.CameraWorker = OfflineWorker
-dlg = cd.CameraDialog()
-dlg.resize(1000, 800)
-dlg.show()
+cp.CameraWorker = OfflineWorker
+from PySide6.QtWidgets import QDialog, QStackedWidget, QWidget  # noqa: E402
+
+host = QWidget()                      # stands in for the main window's canvas
+stack = QStackedWidget(host)
+pane = cp.CapturePane(Settings())
+stack.addWidget(pane)
+host.resize(1000, 760)
+host.show()
+pane.open_camera()
 app.processEvents()
-check("the capture window opens", dlg.isVisible())
-check("the camera list is populated", dlg.cmb_camera.count() == 1,
-      dlg.cmb_camera.currentText())
+check("capture happens inside another window, not in one of its own",
+      not isinstance(pane, QDialog) and not pane.isWindow(),
+      type(pane).__mro__[1].__name__)
+check("the camera list is populated", pane.cmb_camera.count() == 1,
+      pane.cmb_camera.currentText())
 
 feed = PageTracker(settings)
 for f in [frame(scale=0.40)] * 3 + [frame()] * 10:
-    dlg.on_frame(f, feed.check(f))
+    pane.on_frame(f, feed.check(f))
     app.processEvents()
     time.sleep(0.03)
-check("the live status text updates", bool(dlg.status.text()), dlg.status.text())
-dlg.on_capture(frame())
-dlg.on_capture(frame(tilt=18))
+check("the live status text updates", bool(pane.status.text()), pane.status.text())
+check("the live view has an outline to draw", pane.view._quad is not None)
+check("and the detail verdict is shown", "px" in pane.detail.text(),
+      pane.detail.text())
+
+pane.on_capture(frame())
+pane.on_capture(frame(tilt=18))
 app.processEvents()
-check("captured pages appear in the strip", dlg.strip.count() == 2,
-      dlg.lbl_count.text())
+check("captured pages appear in the strip", pane.strip.count() == 2,
+      pane.lbl_count.text())
 check("captures are written to disk",
-      all(p.exists() for p in dlg.captured_paths))
-dlg.grab().save(str(OUT / "camera_window.png"))
-dlg.remove_selected() if dlg.strip.setCurrentRow(0) is None else None
-check("removing a page works", dlg.strip.count() == 1, dlg.lbl_count.text())
-dlg.reject()
-check("cancelling cleans up its files",
-      not any(p.exists() for p in dlg.captured_paths))
+      all(p.exists() for p in pane.captured_paths))
+check("and can be handed to the page list", pane.btn_done.isEnabled())
+pane.grab().save(str(OUT / "capture_pane.png"))
+
+pane.strip.setCurrentRow(0)
+pane.remove_selected()
+check("removing a page works", pane.strip.count() == 1, pane.lbl_count.text())
+
+handed: list = []
+pane.pages_ready.connect(handed.extend)
+pane.finish()
+app.processEvents()
+check("finishing hands the pages over", len(handed) == 1, str(handed))
+check("and the strip is emptied", pane.strip.count() == 0)
+
+pane2 = cp.CapturePane(Settings())
+stack.addWidget(pane2)
+pane2.open_camera()
+pane2.on_capture(frame())
+kept = list(pane2.captured_paths)
+closed: list = []
+pane2.closed.connect(lambda: closed.append(True))
+pane2.cancel()
+check("closing with pages keeps them rather than binning them",
+      all(p.exists() for p in kept) and closed, str(kept[:1]))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

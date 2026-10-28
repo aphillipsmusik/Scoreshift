@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.6 — 2026-10-28
+
+Capturing happens in the window you are already looking at.
+
+- **No second window.** Camera and scanner are a third view in the main
+  window, beside Page and Score. The live feed, the pages you have taken and
+  the controls are all in one place, and *Add to pages* drops them straight
+  into the rail. The scanner's settings - paper source, DPI, colour, how many
+  pages - moved into the same strip, so scanning no longer opens anything
+  either.
+- **The outline tracks the page as you move it.** Each frame's detection is
+  blended into the last, so the corners follow the page instead of twitching
+  a pixel at a time, and an outline that is lost for a frame or two is held on
+  screen rather than flickering out. Moving the page makes it re-measure
+  straight away instead of tracking from where the page used to be.
+- Everything outside the page dims, the way a document scanner shows what it
+  is about to keep, and a dashed line marks where a two-page shot will be cut
+  apart.
+
 ## 1.5 — 2026-10-28
 
 The scanning half, rebuilt around the one thing on a page that nothing else

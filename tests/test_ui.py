@@ -72,6 +72,25 @@ def main() -> int:
           win.primary.text())
     win.grab().save(str(OUT / "ui_empty.png"))
 
+    # The capture view lives in the window now, so switching to it must not
+    # open anything of its own.
+    from PySide6.QtWidgets import QDialog
+    before = [w for w in app.topLevelWidgets() if w.isVisible()]
+    win.view_switch.select(1)
+    win._switch_view(1)
+    pump(app, 0.6)
+    opened = [w for w in app.topLevelWidgets()
+              if w.isVisible() and w not in before]
+    check("capture opens inside the window", not opened
+          and win.stack.currentWidget() is win.capture,
+          win.stack.currentWidget().__class__.__name__)
+    check("no dialog was opened to capture",
+          not any(isinstance(w, QDialog) for w in opened))
+    win.grab().save(str(OUT / "ui_capture.png"))
+    win.view_switch.select(0)
+    win._switch_view(0)
+    pump(app, 0.3)
+
     win._load_paths([FIX / "photo_p1.jpg", FIX / "photo_p2.jpg"])
     wait_idle(app, win)
     check("two pages loaded", len(win.pages) == 2 and win.page_list.count() == 2)
@@ -107,7 +126,7 @@ def main() -> int:
           win.transpose_label.text())
     check("score preview engraved", win.preview._svgs != [],
           f"{len(win.preview._svgs)} page(s)")
-    win.view_switch.select(1)
+    win.view_switch.select(2)
     pump(app, 0.8)
     win.grab().save(str(OUT / "ui_score.png"))
 

@@ -30,6 +30,7 @@ from ..pipeline import omr, pagedetect
 from ..pipeline import score as scoring
 from ..pipeline import scanner as scanning
 from . import icons, theme
+from .capture_pane import CapturePane
 from .crop_view import CropView, ndarray_to_qpixmap
 from .score_preview import ScorePreview
 from .settings_dialog import SettingsDialog
@@ -253,7 +254,8 @@ class MainWindow(QMainWindow):
 
         head = QHBoxLayout()
         head.setSpacing(8)
-        self.view_switch = Segmented([("Page", "page"), ("Score", "score")])
+        self.view_switch = Segmented([("Page", "page"), ("Capture", "camera"),
+                                      ("Score", "score")])
         self.view_switch.changed.connect(self._switch_view)
         head.addWidget(self.view_switch)
         head.addStretch(1)
@@ -297,10 +299,16 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.crop_view = CropView()
         self.crop_view.quad_changed.connect(self._on_quad_changed)
+        self.capture = CapturePane(self.settings)
+        self.capture.pages_ready.connect(self._captured_pages)
+        self.capture.scan_requested.connect(self._run_scan)
+        self.capture.closed.connect(self._capture_closed)
+        self.capture.message.connect(self.log)
         self.preview = ScorePreview()
         self.empty_state = self._build_empty_state()
-        self.stack.addWidget(self.crop_view)
-        self.stack.addWidget(self.preview)
+        self.stack.addWidget(self.crop_view)       # index 0, with the rail
+        self.stack.addWidget(self.capture)         # index 1
+        self.stack.addWidget(self.preview)         # index 2
         self.stack.addWidget(self.empty_state)
         self.stack.setCurrentWidget(self.empty_state)
         col.addWidget(self.stack, 1)
@@ -350,11 +358,21 @@ class MainWindow(QMainWindow):
         return holder
 
     def _switch_view(self, index: int) -> None:
-        self.stack.setCurrentIndex(index)
+        if index != 1:
+            # Leaving the capture view: let go of the camera rather than
+            # holding it open behind another screen.
+            self.capture.stop()
         self.page_tools.setVisible(index == 0)
-        self.score_tools.setVisible(index == 1)
+        self.score_tools.setVisible(index == 2)
         if index == 0:
             self._refresh_page_view()
+        elif index == 1:
+            self.stack.setCurrentWidget(self.capture)
+            self.page_hint.setText(
+                "The outline follows the page as you move it. It shoots by "
+                "itself once the page is steady - or press Space.")
+            self.capture.open_camera()
+            self.capture.setFocus()
         else:
             self.stack.setCurrentWidget(self.preview)
             self.page_hint.setText("")
@@ -670,7 +688,7 @@ class MainWindow(QMainWindow):
         has_score = self.job is not None and self.job.source_score is not None
         self.btn_transpose.setEnabled(has_score)
         self.btn_export.setEnabled(has_score or self.chk_scanpdf.isChecked())
-        self.view_switch.buttons[1].setEnabled(has_score)
+        self.view_switch.buttons[2].setEnabled(has_score)
 
     def _do_primary(self) -> None:
         step, _, _, _ = self.next_step()
@@ -879,11 +897,16 @@ class MainWindow(QMainWindow):
                 self.page_list.item(i).setText(f"  {i + 1}")
 
     def capture_from_camera(self) -> None:
-        from .camera_dialog import CameraDialog
-        dlg = CameraDialog(self)
-        if dlg.exec() and dlg.captured_paths:
-            self.log(f"Captured {len(dlg.captured_paths)} page(s) from the camera.")
-            self._load_paths(list(dlg.captured_paths))
+        self.view_switch.select(1)
+        self._switch_view(1)
+
+    def _captured_pages(self, paths: list) -> None:
+        self.log(f"Captured {len(paths)} page(s).")
+        self._load_paths([Path(p) for p in paths])
+
+    def _capture_closed(self) -> None:
+        self.view_switch.select(0)
+        self._switch_view(0)
 
     def scan_pages(self) -> None:
         if not IS_WINDOWS:
@@ -905,24 +928,20 @@ class MainWindow(QMainWindow):
             log("Scanners: " + ", ".join(d.name for d in devices))
             return devices
 
-        self._run(find, self._choose_scanner, "Looking for scanners...")
+        self.view_switch.select(1)
+        self._switch_view(1)
+        self.capture.open_scanner()
 
-    def _choose_scanner(self, devices) -> None:
-        from .scan_dialog import ScanDialog
-        dlg = ScanDialog(devices, self.settings, self)
-        if not dlg.exec():
-            return
-        dlg.apply_to(self.settings)
+    def _run_scan(self, options: dict) -> None:
         out = work_dir() / "scans"
-        native = dlg.chk_native.isChecked()
-        device_id = dlg.device_id
-        dpi, mode = self.settings.scan_dpi, self.settings.scan_mode
-        source, max_pages = self.settings.scan_source, dlg.spin_pages.value()
+        device_id = options["device"]
+        dpi, mode = int(options["dpi"]), options["mode"]
+        source, max_pages = options["source"], int(options["pages"])
+        self.settings.scan_dpi, self.settings.scan_mode = dpi, mode
+        self.settings.scan_source = source
+        self.settings.save()
 
         def work(log, cancelled, step):
-            if native:
-                step("Waiting for the Windows scan dialog...")
-                return scanning.acquire_with_dialog(out, log=log)
             step(f"Scanning at {dpi} DPI ({mode}, {source})...")
             return scanning.acquire(out, device_id=device_id, dpi=dpi, mode=mode,
                                     source=source, max_pages=max_pages, log=log)
@@ -930,6 +949,8 @@ class MainWindow(QMainWindow):
         def done(paths):
             self.log(f"Scanned {len(paths)} page(s).")
             self._load_paths([Path(p) for p in paths])
+            self.view_switch.select(0)
+            self._switch_view(0)
 
         self._run(work, done, "Scanning...")
 
@@ -958,7 +979,7 @@ class MainWindow(QMainWindow):
         return self.pages[row] if 0 <= row < len(self.pages) else None
 
     def _refresh_page_view(self) -> None:
-        if self.stack.currentIndex() != 0:
+        if self.view_switch.current != 0:
             return
         item = self._current_page()
         if item is None:
@@ -1204,8 +1225,8 @@ class MainWindow(QMainWindow):
     def _render_preview(self, caption: str) -> None:
         if self.job is None:
             return
-        self.view_switch.buttons[1].setEnabled(True)
-        self.view_switch.select(1)
+        self.view_switch.buttons[2].setEnabled(True)
+        self.view_switch.select(2)
         self.preview.set_message("Engraving...")
         engine, job = self.engine, self.job
 
@@ -1430,6 +1451,7 @@ class MainWindow(QMainWindow):
             self._load_paths(paths)
 
     def closeEvent(self, event):  # noqa: D102, N802
+        self.capture.stop()
         self.settings.auto_crop = self.chk_crop.isChecked()
         self.settings.auto_deskew = self.chk_deskew.isChecked()
         self.settings.enhance = self.chk_enhance.isChecked()
