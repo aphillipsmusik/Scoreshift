@@ -91,6 +91,31 @@ def main() -> int:
     win._switch_view(0)
     pump(app, 0.3)
 
+    # A score that already exists as a file skips the scanning entirely.
+    win.view_switch.select(2)
+    win._switch_view(2)
+    pump(app, 0.4)
+    check("the score view offers a file when there is no score",
+          win.stack.currentWidget().objectName() == "ScoreDrop",
+          win.stack.currentWidget().objectName())
+    win.load_score_file(FIX / "original.musicxml")
+    wait_idle(app, win)
+    pump(app, 0.5)
+    check("opening a MusicXML file loads the piece",
+          win.job is not None and win.job.source_score is not None)
+    check("it lands on the score view", win.view_switch.current == 2
+          and win.stack.currentWidget() is win.preview,
+          win.stack.currentWidget().__class__.__name__)
+    check("the key is read from the file", win.stat_key.value.text() == "D major",
+          win.stat_key.value.text())
+    check("and the next step is the key change, not scanning",
+          win.next_step()[0] == "key", win.primary.text())
+    win.job = None
+    win._show_score_info(None)
+    win.view_switch.select(0)
+    win._switch_view(0)
+    pump(app, 0.3)
+
     win._load_paths([FIX / "photo_p1.jpg", FIX / "photo_p2.jpg"])
     wait_idle(app, win)
     check("two pages loaded", len(win.pages) == 2 and len(win.cards.cards) == 2)

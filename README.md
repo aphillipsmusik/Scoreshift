@@ -7,6 +7,9 @@ printable PDF and a MIDI file.
 
 ## What it does
 
+0. **Already have the music as a file?** Drop a MusicXML, MIDI or kern file
+   onto the window, or open one from the Score view, and skip straight to the
+   key change. The steps below are for music that only exists on paper.
 1. **Get the pages in**, three ways — all inside the main window, under
    **Capture**:
    - **Camera** — hold a page in front of a webcam. The outline follows the
@@ -63,7 +66,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.8.exe         the installer
+dist\ScoreShift-Setup-1.9.exe         the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -177,7 +180,7 @@ scoreshift/
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script
 .github/workflows/     tag a version, get an installer attached to the release
-tests/                 244 checks, none of which need a display or a camera
+tests/                 247 checks, none of which need a display or a camera
 ```
 
 Run the tests (from a source checkout; the API tests also want
@@ -189,7 +192,7 @@ Run the tests (from a source checkout; the API tests also want
 .venv\Scripts\python tests\test_camera.py      # 44 checks
 .venv\Scripts\python tests\test_service.py     # 25 checks
 .venv\Scripts\python tests\test_updater.py   # 31 checks
-.venv\Scripts\python tests\test_parts.py     # 58 checks
+.venv\Scripts\python tests\test_parts.py     # 61 checks
 .venv\Scripts\python tests\test_scanner.py   # 44 checks
 .venv\Scripts\python tests\test_ui.py          # window smoke test
 ```
@@ -197,7 +200,7 @@ Run the tests (from a source checkout; the API tests also want
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.8
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.9
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.9 — 2026-10-29
+
+Music that is already a file can skip the scanner.
+
+- **The Score view takes a file.** With nothing loaded it offers a drop zone
+  and an Open button: MusicXML out of MuseScore, Finale or Sibelius, a MIDI
+  file, or Humdrum kern. The piece lands ready for a key change and a save,
+  with no pages, no camera and no note reading in between.
+- **Drop one anywhere on the window** and it opens, the same as dropping
+  photographs does. *Open a score file* also sits on the first screen next to
+  Add images, Use a camera and Scan a page.
+- The Score tab is always reachable now rather than greyed out until
+  something has been transcribed.
+
 ## 1.8 — 2026-10-29
 
 Frame the shot yourself.

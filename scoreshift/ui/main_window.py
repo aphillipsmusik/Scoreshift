@@ -354,10 +354,12 @@ class MainWindow(QMainWindow):
         self.capture.message.connect(self.log)
         self.preview = ScorePreview()
         self.empty_state = self._build_empty_state()
+        self.score_empty = self._build_score_empty()
         self.stack.addWidget(self.crop_view)       # 0
         self.stack.addWidget(self.capture)         # 1
         self.stack.addWidget(self.preview)         # 2
         self.stack.addWidget(self.empty_state)
+        self.stack.addWidget(self.score_empty)
         self.stack.setCurrentWidget(self.empty_state)
         self.stack.setMinimumHeight(430)
         self.stage.add(self.stack, 1)
@@ -365,6 +367,50 @@ class MainWindow(QMainWindow):
         self.page_hint = label("", "Faint")
         self.stage.add(self.page_hint)
         return self.stage
+
+    def _build_score_empty(self) -> QWidget:
+        """What the Score view shows before there is a score.
+
+        A piece that already exists as a file does not need a camera: this is
+        where it comes in.
+        """
+        holder = QWidget()
+        holder.setObjectName("ScoreDrop")
+        holder.setStyleSheet(f"""
+            #ScoreDrop {{ background: {theme.CANVAS};
+                          border: 1.5px dashed {theme.BORDER_STRONG};
+                          border-radius: {theme.RADIUS}px; }}
+        """)
+        col = QVBoxLayout(holder)
+        col.setAlignment(Qt.AlignCenter)
+        col.setSpacing(12)
+
+        art = QLabel()
+        art.setPixmap(icons.pixmap("score", 52, theme.BORDER_STRONG))
+        art.setAlignment(Qt.AlignCenter)
+        col.addWidget(art)
+
+        headline = label("Drop a MusicXML or MIDI file here", "Title")
+        headline.setAlignment(Qt.AlignCenter)
+        col.addWidget(headline)
+
+        sub = label("Already have the music as a file? Skip the scanning - "
+                    "open it, change the key, save it.", "Faint")
+        sub.setAlignment(Qt.AlignCenter)
+        col.addWidget(sub)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        open_button = button("Open a score file", "folder", "primary")
+        open_button.clicked.connect(self.open_score_file)
+        row.addWidget(open_button)
+        row.addStretch(1)
+        col.addLayout(row)
+
+        formats = label(".musicxml  ·  .xml  ·  .mxl  ·  .mid  ·  .krn", "Faint")
+        formats.setAlignment(Qt.AlignCenter)
+        col.addWidget(formats)
+        return holder
 
     def _build_summary(self) -> QWidget:
         self.summary_panel = Panel("Summary")
@@ -422,6 +468,7 @@ class MainWindow(QMainWindow):
             ("Add images", "add", self.add_images),
             ("Use a camera", "camera", self.capture_from_camera),
             ("Scan a page", "scanner", self.scan_pages),
+            ("Open a score file", "score", self.open_score_file),
         ):
             b = button(text, icon_name)
             b.clicked.connect(slot)
@@ -462,8 +509,16 @@ class MainWindow(QMainWindow):
             self.capture.open_camera()
             self.capture.setFocus()
         else:
-            self.stack.setCurrentWidget(self.preview)
-            self.page_hint.setText("")
+            has_score = self.job is not None and self.job.source_score is not None
+            self.stack.setCurrentWidget(
+                self.preview if has_score else self.score_empty)
+            self.score_tools.setVisible(has_score)
+            if not has_score:
+                self.top_hint.setText("Open a file, or read some pages first")
+            self.page_hint.setText(
+                "" if has_score else
+                "A MusicXML or MIDI file can be dropped straight onto this "
+                "window - there is nothing to scan or read.")
 
     # -- slide-over panel ------------------------------------------------
     def _build_panel(self) -> QWidget:
@@ -762,7 +817,10 @@ class MainWindow(QMainWindow):
             "key": "Now pick a key",
             "save": "Ready to save",
         }
-        self.top_hint.setText(hints.get(step, ""))
+        if self.view_switch.current == 2 and self.job is None:
+            self.top_hint.setText("Open a file, or read some pages first")
+        else:
+            self.top_hint.setText(hints.get(step, ""))
 
         has_pages = bool(self.pages)
         for b in (self.btn_up, self.btn_down, self.btn_remove, self.btn_detect,
@@ -781,7 +839,8 @@ class MainWindow(QMainWindow):
         has_score = self.job is not None and self.job.source_score is not None
         self.btn_transpose.setEnabled(has_score)
         self.btn_export.setEnabled(has_score or self.chk_scanpdf.isChecked())
-        self.view_switch.buttons[2].setEnabled(has_score)
+        if self.view_switch.current == 2:
+            self._switch_view(2)
 
     def _do_primary(self) -> None:
         step, _, _, _ = self.next_step()
@@ -1317,13 +1376,25 @@ class MainWindow(QMainWindow):
     def open_score_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Open a score", self.settings.last_input_dir,
-            "Scores (*.xml *.musicxml *.mxl *.mid *.midi *.krn);;All files (*)")
-        if not path:
-            return
+            "Scores (*.musicxml *.xml *.mxl *.mid *.midi *.krn);;"
+            "MusicXML (*.musicxml *.xml *.mxl);;MIDI (*.mid *.midi);;"
+            "All files (*)")
+        if path:
+            self.load_score_file(Path(path))
+
+    def load_score_file(self, path: Path) -> None:
+        """Open a score someone else has already written.
+
+        MusicXML out of MuseScore, Finale or Sibelius, a MIDI file, a Humdrum
+        kern file: there is nothing to photograph or read, so the piece lands
+        ready for a key change and a save.
+        """
         engine = self.engine
+        self.settings.last_input_dir = str(path.parent)
+        self.settings.save()
 
         def work(log, cancelled, step):
-            step("Reading the score...")
+            step(f"Reading {path.name}...")
             return engine.load_score(path)
 
         def done(job: ScoreJob):
@@ -1331,8 +1402,13 @@ class MainWindow(QMainWindow):
             self._show_score_info(job.info)
             self._suggest_basename()
             self._render_preview("Original key")
+            self.log(f"Opened {path.name}.")
+            self.nav.select(2)
+            self._switch_view(2)
+            self.status_label.setText(
+                f"{path.name} opened - pick a key and save.")
 
-        self._run(work, done, "Opening score...")
+        self._run(work, done, f"Opening {path.name}...")
 
     def _show_score_info(self, info: scoring.ScoreInfo | None,
                          seconds: float | None = None) -> None:
@@ -1421,7 +1497,6 @@ class MainWindow(QMainWindow):
     def _render_preview(self, caption: str) -> None:
         if self.job is None:
             return
-        self.view_switch.buttons[2].setEnabled(True)
         self.view_switch.select(2)
         self.preview.set_message("Engraving...")
         engine, job = self.engine, self.job
@@ -1608,8 +1683,9 @@ class MainWindow(QMainWindow):
     # Drag and drop
     # ==================================================================
     IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+    SCORE_SUFFIXES = {".musicxml", ".xml", ".mxl", ".mid", ".midi", ".krn"}
 
-    def _dropped_images(self, event) -> list[Path]:
+    def _dropped_files(self, event, suffixes: set[str]) -> list[Path]:
         if not event.mimeData().hasUrls():
             return []
         out = []
@@ -1617,12 +1693,18 @@ class MainWindow(QMainWindow):
             if not url.isLocalFile():
                 continue
             path = Path(url.toLocalFile())
-            if path.suffix.lower() in self.IMAGE_SUFFIXES and path.is_file():
+            if path.suffix.lower() in suffixes and path.is_file():
                 out.append(path)
         return out
 
+    def _dropped_images(self, event) -> list[Path]:
+        return self._dropped_files(event, self.IMAGE_SUFFIXES)
+
+    def _dropped_scores(self, event) -> list[Path]:
+        return self._dropped_files(event, self.SCORE_SUFFIXES)
+
     def dragEnterEvent(self, event):  # noqa: D102, N802
-        if self._dropped_images(event):
+        if self._dropped_images(event) or self._dropped_scores(event):
             event.acceptProposedAction()
             self.empty_state.setStyleSheet(
                 self.empty_state.styleSheet().replace(
@@ -1637,10 +1719,21 @@ class MainWindow(QMainWindow):
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):  # noqa: D102, N802
-        paths = self._dropped_images(event)
         self.empty_state.setStyleSheet(
             self.empty_state.styleSheet().replace(theme.ACCENT,
                                                   theme.BORDER_STRONG))
+        scores = self._dropped_scores(event)
+        if scores:
+            # A score that is already written needs no camera and no reading:
+            # it goes straight to the key change.
+            event.acceptProposedAction()
+            self.log(f"Dropped {scores[0].name}.")
+            self.load_score_file(scores[0])
+            if len(scores) > 1:
+                self.log("Only the first score was opened - "
+                         "ScoreShift works on one piece at a time.")
+            return
+        paths = self._dropped_images(event)
         if paths:
             event.acceptProposedAction()
             self.log(f"Dropped {len(paths)} file(s).")

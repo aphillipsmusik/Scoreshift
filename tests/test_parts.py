@@ -200,6 +200,31 @@ if problems:
     print("  note: skipped ->", problems)
 
 # ---------------------------------------------------------------------------
+print("\n== Scores that arrive as files ==")
+roundtrip = OUT / "formats"
+roundtrip.mkdir(parents=True, exist_ok=True)
+engine2 = ScoreShiftEngine(workspace=roundtrip / "work")
+sources = {}
+sources["musicxml"] = xml
+midi_path = roundtrip / "ensemble.mid"
+exporter.write_midi(sc, midi_path)
+sources["midi"] = midi_path
+for name, path in sources.items():
+    try:
+        job = engine2.load_score(path)
+        ok = job.source_score is not None and job.info is not None
+        check(f"a {name} file opens straight into a score", ok,
+              f"{job.info.parts} part(s), {job.info.measures} bars" if ok else "")
+    except Exception as exc:  # noqa: BLE001
+        check(f"a {name} file opens straight into a score", False, str(exc)[:60])
+
+job = engine2.load_score(xml)
+engine2.transpose(job, TransposeRequest(semitones=2))
+report = engine2.export(job, roundtrip / "out", "Opened and moved",
+                        ExportRequest(pdf=False, midi=True, musicxml=True))
+check("and can be transposed and saved without a single page being scanned",
+      len(report.written) == 2, ", ".join(p.name for p in report.written))
+
 print("\n== The API ==")
 try:
     from fastapi.testclient import TestClient
