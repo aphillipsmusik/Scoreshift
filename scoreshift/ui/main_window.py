@@ -313,11 +313,19 @@ class MainWindow(QMainWindow):
         self.btn_full.clicked.connect(self.reset_crop)
         self.btn_rotate = icon_button("rotate", "Rotate 90 degrees", 32)
         self.btn_rotate.clicked.connect(self.rotate_current)
+        self.btn_page_zoom_out = icon_button("zoom-out", "Zoom out", 32)
+        self.btn_page_zoom_out.clicked.connect(
+            lambda: self.crop_view.zoom(1 / 1.25))
+        self.btn_page_zoom_in = icon_button("zoom-in", "Zoom in  (Ctrl + wheel)", 32)
+        self.btn_page_zoom_in.clicked.connect(lambda: self.crop_view.zoom(1.25))
+        self.btn_page_fit = button("Fit", "crop", "quiet", "Fit the page to the window")
+        self.btn_page_fit.clicked.connect(lambda: self.crop_view.zoom_fit())
         self.chk_show_clean = QCheckBox("Cleaned")
         self.chk_show_clean.setToolTip("Show the page as the note reader sees it")
         self.chk_show_clean.toggled.connect(self._refresh_page_view)
         for w in (self.btn_detect, self.btn_full, self.btn_rotate,
-                  self.chk_show_clean):
+                  self.btn_page_zoom_out, self.btn_page_zoom_in,
+                  self.btn_page_fit, self.chk_show_clean):
             page_tools.addWidget(w)
         self.stage.add_action(self.page_tools)
 
@@ -758,7 +766,9 @@ class MainWindow(QMainWindow):
 
         has_pages = bool(self.pages)
         for b in (self.btn_up, self.btn_down, self.btn_remove, self.btn_detect,
-                  self.btn_full, self.btn_rotate, self.chk_show_clean):
+                  self.btn_full, self.btn_rotate, self.btn_page_zoom_in,
+                  self.btn_page_zoom_out, self.btn_page_fit,
+                  self.chk_show_clean):
             b.setEnabled(has_pages)
         self.page_tools.setVisible(has_pages and self.view_switch.current == 0)
         self.pages_panel.setVisible(has_pages)

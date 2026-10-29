@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.8 — 2026-10-29
+
+Frame the shot yourself.
+
+- **Manual zoom in the camera view** - a slider, + and - buttons, the mouse
+  wheel, or the + and - keys. Its job is to leave the detector nothing to be
+  confused by: on a desk at 1x the page was 19% of the picture and the tray
+  was most of the rest; at 2.5x the page is 69% of it and the tray is gone.
+- **Drag the picture to move the framed window**, or use the arrow keys, so
+  the page does not have to be centred under the camera. The window stops at
+  the edge of the picture.
+- Where the camera has a zoom of its own, that is used instead of cropping -
+  it crops the sensor rather than the finished frame, so the page keeps its
+  detail. The tooltip says which one is in use, and the detail reading tells
+  you the truth either way: cropping removes distractions, it does not add
+  pixels.
+- **Zoom buttons on the page view too**, next to Rotate, with Fit to go back -
+  the same thing the Ctrl+wheel gesture always did, where it can be seen.
+
 ## 1.7 — 2026-10-28
 
 The window rebuilt as a dashboard.

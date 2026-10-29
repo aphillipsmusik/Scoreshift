@@ -95,15 +95,31 @@ class CameraStream:
         self.request_size(*current)
         return current
 
-    def zoom_range(self) -> tuple[float, float] | None:
-        """What the camera's own zoom can do, if it has one."""
+    def zoom_base(self) -> float | None:
+        """The driver's value for "not zoomed", if it has a zoom at all.
+
+        Worth finding out, because a camera's own zoom and a crop of its
+        picture are not the same thing: most webcams have a sensor larger
+        than the frame they hand over, so zooming in the camera gives real
+        extra detail, where cropping afterwards only throws pixels away.
+        """
         try:
-            value = self.capture.get(cv2.CAP_PROP_ZOOM)
+            base = float(self.capture.get(cv2.CAP_PROP_ZOOM))
         except Exception:  # noqa: BLE001
             return None
-        if value is None or value <= 0:
+        if not base or base <= 0:
             return None
-        return (float(value), float(value) * 4.0)
+        # Setting it has to actually move the value, or the driver is only
+        # being polite.
+        probe = base * 2.0
+        if not self.set_zoom(probe):
+            return None
+        try:
+            moved = float(self.capture.get(cv2.CAP_PROP_ZOOM))
+        except Exception:  # noqa: BLE001
+            moved = base
+        self.set_zoom(base)
+        return base if abs(moved - base) > 0.01 else None
 
     def set_zoom(self, value: float) -> bool:
         try:
@@ -135,6 +151,30 @@ class CameraStream:
 
     def __exit__(self, *exc) -> None:
         self.release()
+
+
+MAX_ZOOM = 4.0
+
+
+def crop_zoom(frame: np.ndarray, factor: float,
+              centre: tuple[float, float] = (0.5, 0.5)) -> np.ndarray:
+    """A window onto part of the frame, at its own pixels.
+
+    Nothing is enlarged - the result is simply smaller, which is the honest
+    thing to do. What it buys is a view with nothing else in it: the desk, the
+    tray, the keyboard and the mug stop being candidates for "the page", and
+    the detector only has to choose between what you have framed.
+    """
+    if factor <= 1.001:
+        return frame
+    factor = min(float(factor), MAX_ZOOM)
+    h, w = frame.shape[:2]
+    cw, ch = max(64, int(w / factor)), max(64, int(h / factor))
+    cx = min(max(centre[0], 0.0), 1.0) * w
+    cy = min(max(centre[1], 0.0), 1.0) * h
+    x0 = int(min(max(cx - cw / 2, 0), w - cw))
+    y0 = int(min(max(cy - ch / 2, 0), h - ch))
+    return frame[y0:y0 + ch, x0:x0 + cw]
 
 
 # ---------------------------------------------------------------------------

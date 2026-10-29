@@ -16,7 +16,8 @@ from PySide6.QtGui import (QBrush, QColor, QIcon, QPainter, QPen, QPixmap,
                            QPolygonF)
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QSizePolicy,
-                               QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
+                               QSlider, QSpinBox, QStackedWidget, QVBoxLayout,
+                               QWidget)
 
 from ..config import Settings, work_dir
 from ..pipeline import camera as cam
@@ -49,6 +50,7 @@ class CameraWorker(QThread):
     frame_ready = Signal(object, object)      # ndarray, FrameCheck
     captured = Signal(object)                 # ndarray (full resolution)
     size_chosen = Signal(int, int)            # what the camera actually gave
+    zoom_mode = Signal(str)                   # "camera" or "crop"
     failed = Signal(str)
 
     def __init__(self, index: int, width: int, height: int, parent=None) -> None:
@@ -59,6 +61,8 @@ class CameraWorker(QThread):
         self.auto = True
         self._stop = False
         self._shutter = False
+        self.zoom = 1.0
+        self.centre = (0.5, 0.5)
         self.tracker = cam.PageTracker()
 
     def stop(self) -> None:
@@ -79,12 +83,26 @@ class CameraWorker(QThread):
         except cam.CameraError as exc:
             self.failed.emit(str(exc))
             return
+
+        # A camera that can zoom itself is worth using: it crops its sensor
+        # before handing the frame over, so the page arrives with more detail
+        # rather than less. Otherwise the frame is cropped here, which costs
+        # detail but still takes the desk out of the picture.
+        base = stream.zoom_base()
+        self.zoom_mode.emit("camera" if base else "crop")
+        applied = None
         try:
             while not self._stop:
                 frame = stream.read()
                 if frame is None:
                     time.sleep(0.03)
                     continue
+                if base:
+                    if applied != self.zoom:
+                        stream.set_zoom(base * min(self.zoom, cam.MAX_ZOOM))
+                        applied = self.zoom
+                else:
+                    frame = cam.crop_zoom(frame, self.zoom, self.centre)
                 check = self.tracker.check(frame)
                 take = self._shutter or (self.auto
                                          and self.tracker.should_capture(check))
@@ -105,6 +123,8 @@ class CameraWorker(QThread):
 class CameraView(QWidget):
     """The feed, with the page outlined as it moves."""
 
+    panned = Signal(float, float)       # fractions of the whole frame
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setMinimumSize(360, 240)
@@ -114,6 +134,10 @@ class CameraView(QWidget):
         self._pages = 1
         self._flash = 0.0
         self._placeholder = "Starting the camera..."
+        self._zoom = 1.0
+        self._pannable = False
+        self._drag: tuple[float, float] | None = None
+        self._scaled_width = 1.0
 
 
     def update_frame(self, frame: np.ndarray, check) -> None:
@@ -134,6 +158,43 @@ class CameraView(QWidget):
         self._flash = time.time()
         self.update()
 
+    def set_window(self, zoom: float, centre: tuple[float, float],
+                   pannable: bool) -> None:
+        self._zoom = zoom
+        self._pannable = pannable and zoom > 1.001
+        self.setCursor(Qt.OpenHandCursor if self._pannable else Qt.ArrowCursor)
+        self.update()
+
+    # Dragging moves the framed window, so the page can be anywhere on the
+    # desk and still be the only thing the detector is shown.
+    def mousePressEvent(self, event):  # noqa: D102, N802
+        if self._pannable and event.button() == Qt.LeftButton:
+            self._drag = (event.position().x(), event.position().y())
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: D102, N802
+        if self._drag is not None:
+            x, y = event.position().x(), event.position().y()
+            dx, dy = x - self._drag[0], y - self._drag[1]
+            self._drag = (x, y)
+            span = max(self._scaled_width, 1.0)
+            self.panned.emit(-(dx / span) / self._zoom,
+                             -(dy / span) / self._zoom)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: D102, N802
+        if self._drag is not None:
+            self._drag = None
+            self.setCursor(Qt.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def paintEvent(self, event):  # noqa: D102, N802
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(theme.CANVAS))
@@ -149,6 +210,15 @@ class CameraView(QWidget):
         oy = (self.height() - scaled.height()) / 2
         painter.drawPixmap(int(ox), int(oy), scaled)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        self._scaled_width = float(scaled.width())
+
+        if self._zoom > 1.001:
+            badge = f"{self._zoom:.1f}x"
+            painter.setPen(QColor(theme.TEXT))
+            painter.setBrush(QBrush(QColor(0, 0, 0, 150)))
+            painter.drawRoundedRect(int(ox) + 10, int(oy) + 10, 44, 22, 8, 8)
+            painter.drawText(int(ox) + 10, int(oy) + 10, 44, 22,
+                             Qt.AlignCenter, badge)
 
         if self._quad is not None and self._pix.width() > 0:
             sx = scaled.width() / self._pix.width()
@@ -230,6 +300,7 @@ class CapturePane(QWidget):
         root.addLayout(top)
 
         self.view = CameraView()
+        self.view.panned.connect(self.pan)
         self.scanner_art = self._scanner_art()
         self.stage = QStackedWidget()
         self.stage.addWidget(self.view)
@@ -298,12 +369,36 @@ class CapturePane(QWidget):
         self.chk_auto = QCheckBox("Shoot when steady")
         self.chk_auto.setChecked(True)
         self.chk_auto.toggled.connect(self._auto_toggled)
+
+        # Framing the page by hand is the quickest way to stop the detector
+        # being offered the desk, the tray and everything else on it.
+        self.zoom = 1.0
+        self.centre = [0.5, 0.5]
+        self._zoom_mode = "crop"
+        self.btn_zoom_out = icon_button("zoom-out", "Widen the view", 30)
+        self.btn_zoom_out.clicked.connect(lambda: self.nudge_zoom(1 / 1.25))
+        self.slider_zoom = QSlider(Qt.Horizontal)
+        self.slider_zoom.setRange(10, int(cam.MAX_ZOOM * 10))
+        self.slider_zoom.setValue(10)
+        self.slider_zoom.setFixedWidth(110)
+        self.slider_zoom.setToolTip(
+            "Zoom in to show the detector nothing but the page")
+        self.slider_zoom.valueChanged.connect(
+            lambda v: self.set_zoom(v / 10.0, from_slider=True))
+        self.btn_zoom_in = icon_button("zoom-in", "Tighten the view", 30)
+        self.btn_zoom_in.clicked.connect(lambda: self.nudge_zoom(1.25))
+        self.lbl_zoom = label("1.0x", "Faint")
+        self.lbl_zoom.setFixedWidth(34)
         self.cmb_camera.currentIndexChanged.connect(lambda _: self.restart())
         self.cmb_res.currentIndexChanged.connect(lambda _: self.restart())
         row.addStretch(1)
         row.addWidget(self.cmb_camera, 2)
         row.addWidget(self.cmb_res)
         row.addWidget(self.lbl_size)
+        row.addWidget(self.btn_zoom_out)
+        row.addWidget(self.slider_zoom)
+        row.addWidget(self.btn_zoom_in)
+        row.addWidget(self.lbl_zoom)
         row.addWidget(self.chk_auto)
         return holder
 
@@ -440,6 +535,9 @@ class CapturePane(QWidget):
         self.worker.frame_ready.connect(self.on_frame)
         self.worker.captured.connect(self.on_capture)
         self.worker.size_chosen.connect(self.on_size_chosen)
+        self.worker.zoom_mode.connect(self.on_zoom_mode)
+        self.worker.zoom = self.zoom
+        self.worker.centre = tuple(self.centre)
         self.worker.failed.connect(self.on_failed)
         self.worker.start()
 
@@ -514,6 +612,52 @@ class CapturePane(QWidget):
             self.status.setStyleSheet(f"color:{theme.TEXT_DIM};")
 
     # -- actions ----------------------------------------------------------
+    def set_zoom(self, value: float, from_slider: bool = False) -> None:
+        self.zoom = max(1.0, min(float(value), cam.MAX_ZOOM))
+        if self.zoom <= 1.001:
+            self.centre = [0.5, 0.5]
+        if not from_slider:
+            self.slider_zoom.blockSignals(True)
+            self.slider_zoom.setValue(int(round(self.zoom * 10)))
+            self.slider_zoom.blockSignals(False)
+        self.lbl_zoom.setText(f"{self.zoom:.1f}x")
+        if self.worker is not None:
+            self.worker.zoom = self.zoom
+            self.worker.centre = tuple(self.centre)
+        self.view.set_window(self.zoom, tuple(self.centre),
+                             self._zoom_mode == "crop")
+        self._announce_zoom()
+
+    def nudge_zoom(self, factor: float) -> None:
+        self.set_zoom(self.zoom * factor)
+
+    def pan(self, dx: float, dy: float) -> None:
+        """Move the framed window, when it is a crop of the picture."""
+        if self._zoom_mode != "crop" or self.zoom <= 1.001:
+            return
+        span = 1.0 - 1.0 / self.zoom
+        self.centre[0] = min(max(self.centre[0] + dx, 0.5 - span / 2),
+                             0.5 + span / 2)
+        self.centre[1] = min(max(self.centre[1] + dy, 0.5 - span / 2),
+                             0.5 + span / 2)
+        if self.worker is not None:
+            self.worker.centre = tuple(self.centre)
+        self.view.set_window(self.zoom, tuple(self.centre), True)
+
+    def on_zoom_mode(self, mode: str) -> None:
+        self._zoom_mode = mode
+        self._announce_zoom()
+
+    def _announce_zoom(self) -> None:
+        if self.zoom <= 1.001:
+            self.lbl_zoom.setToolTip("The whole frame")
+            return
+        self.lbl_zoom.setToolTip(
+            "The camera's own zoom - the page keeps its detail"
+            if self._zoom_mode == "camera" else
+            "A crop of the picture - fewer distractions, same detail. "
+            "Drag the picture to move the frame.")
+
     def take_shot(self) -> None:
         if self.worker is not None:
             self.worker.shutter()
@@ -570,9 +714,34 @@ class CapturePane(QWidget):
         self.stop()
         self.closed.emit()
 
+    def wheelEvent(self, event):  # noqa: D102, N802
+        if self.source_switch.current == 0:
+            steps = event.angleDelta().y() / 120.0
+            if steps:
+                self.nudge_zoom(1.15 ** steps)
+                event.accept()
+                return
+        super().wheelEvent(event)
+
     def keyPressEvent(self, event):  # noqa: D102, N802
-        if event.key() == Qt.Key_Space and self.source_switch.current == 0:
-            self.take_shot()
-            event.accept()
-            return
+        if self.source_switch.current == 0:
+            if event.key() == Qt.Key_Space:
+                self.take_shot()
+                event.accept()
+                return
+            if event.key() in (Qt.Key_Plus, Qt.Key_Equal):
+                self.nudge_zoom(1.25)
+                event.accept()
+                return
+            if event.key() == Qt.Key_Minus:
+                self.nudge_zoom(1 / 1.25)
+                event.accept()
+                return
+            step = 0.06
+            moves = {Qt.Key_Left: (-step, 0.0), Qt.Key_Right: (step, 0.0),
+                     Qt.Key_Up: (0.0, -step), Qt.Key_Down: (0.0, step)}
+            if event.key() in moves:
+                self.pan(*moves[event.key()])
+                event.accept()
+                return
         super().keyPressEvent(event)

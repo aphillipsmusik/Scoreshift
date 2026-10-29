@@ -172,12 +172,21 @@ class CropView(QGraphicsView):
 
     def resizeEvent(self, event):  # noqa: D102, N802
         super().resizeEvent(event)
+        if not getattr(self, "_zoomed", False):
+            self.fit()
+
+    def zoom(self, factor: float) -> None:
+        """Zoom the page in or out, keeping what is under the cursor."""
+        self._zoomed = True
+        self.scale(factor, factor)
+
+    def zoom_fit(self) -> None:
+        self._zoomed = False
         self.fit()
 
     def wheelEvent(self, event):  # noqa: D102, N802
         if event.modifiers() & Qt.ControlModifier:
-            factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-            self.scale(factor, factor)
+            self.zoom(1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
             event.accept()
         else:
             super().wheelEvent(event)

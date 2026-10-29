@@ -246,5 +246,76 @@ pane2.cancel()
 check("closing with pages keeps them rather than binning them",
       all(p.exists() for p in kept) and closed, str(kept[:1]))
 
+print("\n== Framing the shot by hand ==")
+from scoreshift.pipeline import camera as camlib  # noqa: E402
+
+big = frame()
+check("1x leaves the frame alone",
+      camlib.crop_zoom(big, 1.0).shape == big.shape)
+half = camlib.crop_zoom(big, 2.0)
+check("2x keeps the middle quarter",
+      half.shape[0] == big.shape[0] // 2 and half.shape[1] == big.shape[1] // 2,
+      f"{half.shape[1]}x{half.shape[0]} of {big.shape[1]}x{big.shape[0]}")
+check("nothing is enlarged - the pixels are the camera's own",
+      bool((half == big[big.shape[0] // 4:big.shape[0] // 4 + half.shape[0],
+                        big.shape[1] // 4:big.shape[1] // 4 + half.shape[1]]).all()))
+corner = camlib.crop_zoom(big, 2.0, (0.0, 0.0))
+check("the window can be moved to a corner",
+      bool((corner == big[:corner.shape[0], :corner.shape[1]]).all()))
+check("and cannot be moved off the picture",
+      camlib.crop_zoom(big, 2.0, (9.0, 9.0)).shape == half.shape)
+check("zoom is capped", camlib.crop_zoom(big, 99.0).shape
+      == camlib.crop_zoom(big, camlib.MAX_ZOOM).shape)
+
+# The point of it: less of everything else for the detector to choose from.
+from scoreshift.pipeline import staves  # noqa: E402
+
+desk = cv2.imread(str(FIX / "photo_on_tray.jpg"))
+tight = camlib.crop_zoom(desk, 2.5, (0.47, 0.5))
+
+
+def page_share(image):
+    tracker = PageTracker(TrackerSettings(require_readable=False))
+    tracker.check(image)
+    result = tracker.check(image)
+    if result.quad is None:
+        return 0.0
+    area = abs(cv2.contourArea(result.quad.astype(np.float32)))
+    return area / (image.shape[0] * image.shape[1])
+
+
+wide, close = page_share(desk), page_share(tight)
+check("zooming in leaves the page filling much more of the view",
+      close > wide * 2, f"{wide:.0%} of the frame, then {close:.0%}")
+check("the detail is unchanged - cropping adds nothing",
+      abs(staves.analyse(desk).interline
+          - staves.analyse(tight).interline) <= 1.5,
+      f"{staves.analyse(desk).interline:.0f} px either way")
+
+print("\n== The zoom controls ==")
+pane3 = cp.CapturePane(Settings())
+stack.addWidget(pane3)
+pane3.open_camera()
+app.processEvents()
+check("it starts on the whole frame", pane3.lbl_zoom.text() == "1.0x")
+pane3.nudge_zoom(2.0)
+check("zooming in moves the slider too",
+      pane3.slider_zoom.value() == 20 and pane3.lbl_zoom.text() == "2.0x",
+      f"slider {pane3.slider_zoom.value()}")
+check("and reaches the camera thread", pane3.worker is None
+      or pane3.worker.zoom == 2.0)
+pane3.pan(0.2, 0.0)
+check("the window can be panned", pane3.centre[0] > 0.5,
+      str([round(c, 2) for c in pane3.centre]))
+pane3.pan(9.0, 9.0)
+check("panning stops at the edge of the picture",
+      pane3.centre[0] <= 0.75 + 1e-6 and pane3.centre[1] <= 0.75 + 1e-6,
+      str([round(c, 2) for c in pane3.centre]))
+pane3.set_zoom(1.0)
+check("going back to 1x recentres", pane3.centre == [0.5, 0.5])
+pane3.set_zoom(99.0)
+check("the control is capped too", pane3.zoom == camlib.MAX_ZOOM,
+      f"{pane3.zoom}x")
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

@@ -63,7 +63,7 @@ needed). Output lands in `dist\`:
 
 ```
 dist\ScoreShift\ScoreShift.exe          the app, runnable as-is
-dist\ScoreShift-Setup-1.7.exe         the installer
+dist\ScoreShift-Setup-1.8.exe         the installer
 ```
 
 Add `-SkipInstaller` to stop after the exe, or `-Clean` to start fresh.
@@ -94,6 +94,14 @@ about 17. So the **scanner is the reliable route**, a phone photo is good, and
 a webcam wants one page filling the frame. ScoreShift enlarges fine staves for
 the reader, but it cannot invent detail the camera never caught, and it says
 so rather than pretending.
+
+**Zoom.** The camera view has a zoom - slider, buttons, wheel, or the + and -
+keys - and you can drag the picture to move the framed window. It is there to
+give the page detector nothing else to look at: on a cluttered desk it is the
+quickest way to stop a tray or a laptop being mistaken for the page. If the
+camera has a zoom of its own, ScoreShift uses that, which also gains real
+detail; otherwise it crops the frame, which removes distractions without
+adding pixels - the detail reading tells you which you got.
 
 **Camera.** Fill most of the frame with the page, keep the whole page in view,
 and hold still — the outline turns green and it fires. It won't shoot a blurry,
@@ -169,7 +177,7 @@ scoreshift/
   updater.py           checking GitHub Releases, downloading, verifying
 packaging/             PyInstaller spec, Inno Setup script, release script
 .github/workflows/     tag a version, get an installer attached to the release
-tests/                 229 checks, none of which need a display or a camera
+tests/                 244 checks, none of which need a display or a camera
 ```
 
 Run the tests (from a source checkout; the API tests also want
@@ -178,7 +186,7 @@ Run the tests (from a source checkout; the API tests also want
 ```
 .venv\Scripts\python tests\make_fixture.py     # builds a synthetic photo
 .venv\Scripts\python tests\test_pipeline.py    # 41 checks
-.venv\Scripts\python tests\test_camera.py      # 29 checks
+.venv\Scripts\python tests\test_camera.py      # 44 checks
 .venv\Scripts\python tests\test_service.py     # 25 checks
 .venv\Scripts\python tests\test_updater.py   # 31 checks
 .venv\Scripts\python tests\test_parts.py     # 58 checks
@@ -189,7 +197,7 @@ Run the tests (from a source checkout; the API tests also want
 ## Releasing
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.7
+powershell -ExecutionPolicy Bypass -File .\packaging\release.ps1 -Version 1.8
 ```
 
 Sets the version in both places that hold it, builds, writes `SHA256SUMS.txt`,
